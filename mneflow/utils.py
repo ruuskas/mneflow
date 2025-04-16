@@ -891,7 +891,7 @@ def produce_tfrecords(inputs,
     >>> meta = mneflow.produce_tfrecords(input_paths, \**import_opts)
     """
     
-    assert input_type in ['trials', 'seq', 'continuous', 'fconn'], "Unknown input type."
+    assert input_type in ['trials', 'seq', 'continuous', 'fconn'], "Unknown input type: {}".format(input_type)
     assert target_type in ['int', 'float', 'signal'], "Unknown target type."
     
     if not os.path.exists(path):

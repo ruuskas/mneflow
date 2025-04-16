@@ -110,18 +110,6 @@ class BaseModel():
 
 
 
-    # @classmethod
-    # def from_config(cls, config):
-    #     return cls(**config)
-
-    # def get_config(self):
-    #     config = {
-    #         "fc": self.fc
-    #     }
-    #     return config
-
-
-
     def build(self, optimizer="adam", loss=None, metrics=None, mapping=None,
               learn_rate=3e-4):
         """Compile a model.
@@ -164,8 +152,6 @@ class BaseModel():
                 metrics = [metrics]
             params["metrics"] = [tf.keras.metrics.get(metric) for metric in metrics]
 
-        #
-        #self.specs.setdefault('unitnorm_scope', [])
        # Initialize optimizer
         if self.dataset.h_params["target_type"] in ['float', 'signal']:
             params.setdefault("loss", tf.keras.losses.MeanSquaredError(name='MSE'))
@@ -197,11 +183,7 @@ class BaseModel():
         param_names['learn_rate'] = learn_rate
         param_names['trained'] = False
         self.meta.update(train_params=param_names)
-        #self.specs['model_name'] = model_name
 
-        #save intial model weights
-        # self.km.save(os.path.join(self.model_path, 
-        #                                   self.model_name + '.h5'))
         self.km.save_weights(os.path.join(self.model_path, 
                                           ''.join([self.model_name,
                                                    self.specs_prefix,
@@ -234,7 +216,8 @@ class BaseModel():
 
     def train(self, n_epochs=10, eval_step=None, min_delta=1e-6,
               early_stopping=3, mode='single_fold', prune_weights=False,
-              collect_patterns = False, class_weights = None) :
+              collect_patterns=False, class_weights=None,
+              noisy_labels=False, noise_std=.1) :
 
         """
         Train a model
@@ -266,6 +249,14 @@ class BaseModel():
 
         class_weights : None, dict
             Whether to apply cutom wegihts fro each class
+        
+        noisy_labels : bool, optional
+            Train model with addition gaussinan noise to labels. (Experimental)
+            Does not work with class_weights
+        
+        noise_std : float, optional
+            Standard deviation of the noise added to labels. (Experimental)
+            Does not work with class_weights
         """
 
         
@@ -277,12 +268,12 @@ class BaseModel():
                             eval_step=eval_step, 
                             early_stopping=early_stopping, 
                             mode=mode)
+        
         self.meta.update(train_params=train_params)
-        stop_early = tf.keras.callbacks.EarlyStopping(monitor='val_loss',
-                                                      min_delta=min_delta,
-                                                      patience=self.meta.train_params['early_stopping'],
-                                                      restore_best_weights=True)
+        
+        
         rmss = defaultdict(list)
+        
         self.cv_losses = []
         self.cv_metrics = []
         self.cv_test_losses = []
@@ -296,154 +287,40 @@ class BaseModel():
         else:
             class_weights = None
         print("Class weights: ", class_weights)
+        
         if mode == 'single_fold':
             n_folds = 1
-            train, val = self.dataset._build_dataset(self.dataset.h_params['train_paths'],
-                                               train_batch=self.dataset.training_batch,
-                                               test_batch=self.dataset.validation_batch,
-                                               split=True, val_fold_ind=0)
-
-            self.t_hist = self.km.fit(train,
-                                   validation_data=val,
-                                   epochs=self.meta.train_params['n_epochs'], 
-                                   steps_per_epoch=self.meta.train_params['eval_step'],
-                                   shuffle=True,
-                                   validation_steps=self.dataset.validation_steps,
-
-                                   callbacks=[stop_early], verbose=2,
-                                   class_weight=class_weights)
-            self.meta.train_params.update({"trained":True})
-
-            #compute validation loss and metric
-            v_loss, v_metric = self.evaluate(self.dataset.val)
-
-            self.cv_losses.append(v_loss)
-            self.cv_metrics.append(v_metric)
-            #self.cv_metric_pvalues.append(self.permutation_p_value())
-
-            if len(self.dataset.h_params['test_paths']):
-                    t_loss, t_metric = self.evaluate(self.dataset.h_params['test_paths'])
-                    # print("""Test performance:
-                    #       Loss: {:.4f} 
-                    #       Metric: {:.4f}""".format(t_loss, t_metric))
-                    self.cv_test_losses.append(t_loss)
-                    self.cv_test_metrics.append(t_metric)
-
-            #compute specific metrics for classification and regresssion
-            y_true, y_pred = self.predict(self.dataset.val)
-            if self.dataset.h_params['target_type'] == 'float':
-                rms = regression_metrics(y_true, y_pred)
-                print("Validation set: Corr =", rms['cc'], " R2 =", rms['r2'])
-            else:
-                rms = None
-                self.cm += self._confusion_matrix(y_true, y_pred)
-
-            if collect_patterns and self.scope == 'lfcnn':
-                self.collect_patterns(fold=0, n_folds=n_folds, n_comp=int(collect_patterns))
-
         elif mode == 'cv':
-            
-            
             n_folds = len(self.dataset.h_params['folds'][0])
             print("Running cross-validation with {} folds".format(n_folds))
-
-
-            for jj in range(n_folds):
-                print("fold:", jj)
-                train, val = self.dataset._build_dataset(self.dataset.h_params['train_paths'],
-                                                   train_batch=self.dataset.training_batch,
-                                                   test_batch=self.dataset.validation_batch,
-                                                   split=True, val_fold_ind=jj)
-                self.t_hist = self.km.fit(train,
-                                   validation_data=val,
-                                   epochs=self.meta.train_params['n_epochs'], 
-                                   steps_per_epoch=self.meta.train_params['eval_step'],
-                                   shuffle=True,
-                                   validation_steps=self.dataset.validation_steps,
-                                   callbacks=[stop_early], verbose=2,
-                                   class_weight=class_weights)
-                
-                self.meta.train_params.update({"trained":True})
-                v_loss, v_metric = self.evaluate(val)
-                self.cv_losses.append(v_loss)
-                self.cv_metrics.append(v_metric)
-                #self.cv_metric_pvalues.append(self.permutation_p_value())
-
-                if len(self.dataset.h_params['test_paths']):
-                    t_loss, t_metric = self.evaluate(self.dataset.h_params['test_paths'])
-                    print("""Test performance:
-                          Loss: {:.4f} 
-                          Metric: {:.4f}""".format(t_loss, t_metric))
-                    self.cv_test_losses.append(t_loss)
-                    self.cv_test_metrics.append(t_metric)
-
-                y_true, y_pred = self.predict(val)
-
-                if self.dataset.h_params['target_type'] == 'float':
-                    rms = regression_metrics(y_true, y_pred)
-                    for k,v in rms.items():
-                        rmss[k].append(v)
-                    print("Validation set: Corr =", rms['cc'], " R2 =", rms['r2'])
-                else:
-                    self.cm += self._confusion_matrix(y_true, y_pred)
-                    rms = None
-
-                if collect_patterns and self.scope == 'lfcnn':
-                    self.collect_patterns(fold=jj, n_folds=n_folds,
-                                          n_comp=int(collect_patterns))
-
-
-                if jj < n_folds - 1:
-                    self.km.load_weights(os.path.join(self.model_path,
-                                                      ''.join([self.model_name,
-                                                               self.specs_prefix,
-                                                               '_init.weights.h5'])),
-                                         skip_mismatch=True)
-                    self.shuffle_weights()
-                    stop_early.best = np.Inf
-                else:
-                    "Not shuffling the weights for the last fold"
-
-                print("""Fold: {} Validation performance:\n
-                      Loss: {:.4f}, 
-                      Metric: {:.4f}""".format(jj, v_loss, v_metric))
-
-            metrics = self.cv_metrics
-            losses = self.cv_losses
-
-            print("{} with {} folds completed. Loss: {:.4f} +/- {:.4f}. Metric: {:.4f} +/- {:.4f}".format(mode, n_folds, np.mean(losses), np.std(losses), np.mean(metrics), np.std(metrics)))
-
-            if self.dataset.h_params['target_type'] == 'float':
-                rms = {k:np.mean(v) for k, v in rmss.items()}
-                rms.update({k + '_std':np.std(v) for k, v in rmss.items()})
-                print("Validation set: Corr : {:.3f} +/- {:.3f}. \
-                      R^2: {:.3f} +/- {:.3f}".format(
-                      rms['cc'], rms['cc_std'], rms['r2'], rms['r2_std']))
-            else:
-                rms = None
-
-
         elif mode == "loso":
             n_folds = len(self.dataset.h_params['train_paths'])
-            print("Running leave-one-subject-out CV with {} subject".format(n_folds))
 
-            for jj in range(n_folds):
-                print("fold:", jj)
 
+        for jj in range(n_folds):
+            
+            print("Running {} fold: {}".format(mode, jj))
+            if mode == "loso":
                 test_subj = self.dataset.h_params['train_paths'][jj]
                 train_subjs = self.dataset.h_params['train_paths'].copy()
                 train_subjs.pop(jj)
-
-                print(train_subjs)
-                print('***')
-                print(test_subj)
 
                 train, val = self.dataset._build_dataset(train_subjs,
                                                    train_batch=self.dataset.training_batch,
                                                    test_batch=self.dataset.validation_batch,
                                                    split=True, val_fold_ind=0)
-
-
+                
+            else:
+                
+                train, val = self.dataset._build_dataset(self.dataset.h_params['train_paths'],
+                                                   train_batch=self.dataset.training_batch,
+                                                   test_batch=self.dataset.validation_batch,
+                                                   split=True, val_fold_ind=jj)
+            if not noisy_labels:
+                stop_early = tf.keras.callbacks.EarlyStopping(monitor='val_loss',
+                                                              min_delta=self.meta.train_params['min_delta'],
+                                                              patience=self.meta.train_params['early_stopping'],
+                                                              restore_best_weights=True)
                 self.t_hist = self.km.fit(train,
                                    validation_data=val,
                                    epochs=self.meta.train_params['n_epochs'], 
@@ -452,59 +329,97 @@ class BaseModel():
                                    validation_steps=self.dataset.validation_steps,
                                    callbacks=[stop_early], verbose=2,
                                    class_weight=class_weights)
+            else:
+                trainer = NoisyTrainer(self.km, 
+                                       noise_std=noise_std,  # Noise standard deviation
+                                       patience=self.meta.train_params['early_stopping'],     # Stop if no improvement for 5 epochs
+                                       min_delta=min_delta # Minimum change to count as improvement
+                                       )
 
-
+                self.t_hist = trainer.train(train, val, 
+                                            epochs=self.meta.train_params['n_epochs'], 
+                                            eval_step=self.meta.train_params['min_delta']
+                                            )
+            
+            self.meta.train_params.update({"trained":True})
+            
+            v_loss, v_metric = self.evaluate(val)
+            self.cv_losses.append(v_loss)
+            self.cv_metrics.append(v_metric)
+            
+            if mode == 'loso':
+                print("Creating loso test DS")
                 test = self.dataset._build_dataset(test_subj,
                                                    test_batch=None,
-                                                   split=False)
+                                                   split=False,
+                                                   repeat=False)
+            elif len(self.dataset.h_params['test_paths']):
+                test = self.dataset._build_dataset(self.dataset.h_params['test_paths'],
+                                                   test_batch=None,
+                                                   split=False,
+                                                   repeat=False)
+            else:
+                test = None
+            
+            if test:
 
-                v_loss, v_metric = self.evaluate(val)
                 t_loss, t_metric = self.evaluate(test)
-
-                print("Subj: {} Loss: {:.4f}, Metric: {:.4f}".format(jj, t_loss, t_metric))
-                self.cv_losses.append(v_loss)
-                self.cv_metrics.append(v_metric)
                 self.cv_test_losses.append(t_loss)
                 self.cv_test_metrics.append(t_metric)
-                #self.cv_metric_pvalues.append(self.permutation_p_value(dataset=test))
                 
-
-                y_true, y_pred = self.predict(val)
-                if self.dataset.h_params['target_type'] == 'float':
-                    y_true, y_pred = self.predict(val)
-                    rms = regression_metrics(y_true, y_pred)
-                    for k,v in rms.items():
-                        rmss[k].append(v)
-                    print("Validation set: Corr =", rms['cc'], " R2 =", rms['r2'])
-                else:
-                    self.cm += self._confusion_matrix(y_true, y_pred)
-                    rms = None
-
-                if collect_patterns and self.scope == 'lfcnn':
-                    self.collect_patterns(fold=jj, n_folds=n_folds,
-                                          n_comp=int(collect_patterns))
-
-                if jj < n_folds -1:
-                    self.km.load_weights(os.path.join(self.model_path,
-                                                      ''.join([self.model_name,
-                                                               self.specs_prefix,
-                                                               '_init.weights.h5'])),
-                                        skip_mismatch=True)
-                    self.shuffle_weights()
-                    stop_early.best = np.Inf
-                else:
-                    "Not shuffling the weights for the last fold"
+            
+            
+            y_true, y_pred = self.predict(val)
+            
 
             if self.dataset.h_params['target_type'] == 'float':
-                rms = {k:np.mean(v) for k, v in rmss.items()}
-                rms.update({k + '_std':np.std(v) for k, v in rmss.items()})
-                print("Validation set: Corr : {:.3f} +/- {:.3f}. \
-                      R^2: {:.3f} +/- {:.3f}".format(
-                      rms['cc'], rms['cc_std'], rms['r2'], rms['r2_std']))
+                rms = regression_metrics(y_true, y_pred)
+                for k,v in rms.items():
+                    rmss[k].append(v)
+                print("Validation set: Corr =", rms['cc'], " R2 =", rms['r2'])
+            
             else:
+                self.cm += self._confusion_matrix(y_true, y_pred)
                 rms = None
 
-            #self.update_log(rms, prefix='loso_')
+            if collect_patterns and self.scope == 'lfcnn':
+                self.collect_patterns(fold=jj, n_folds=n_folds,
+                                      n_comp=int(collect_patterns))
+
+
+            if jj < n_folds - 1:
+                self.km.load_weights(os.path.join(self.model_path,
+                                                  ''.join([self.model_name,
+                                                           self.specs_prefix,
+                                                           '_init.weights.h5'])),
+                                     skip_mismatch=True)
+                self.shuffle_weights()
+                stop_early.best = np.Inf
+                
+            else:
+                print("Not shuffling the weights for the last fold")
+
+            print("""Fold: {} Validation performance:\n
+                  Loss: {:.4f}, 
+                  Metric: {:.4f}""".format(jj, v_loss, v_metric))
+
+        metrics = self.cv_metrics
+        losses = self.cv_losses
+
+        print("""{} with {} folds completed. 
+              Loss: {:.4f} +/- {:.4f}. 
+              Metric: {:.4f} +/- {:.4f}""".format(mode, n_folds,
+                                                  np.mean(losses), np.std(losses), 
+                                                  np.mean(metrics), np.std(metrics)))
+
+        if self.dataset.h_params['target_type'] == 'float':
+            rms = {k:np.mean(v) for k, v in rmss.items()}
+            rms.update({k + '_std':np.std(v) for k, v in rmss.items()})
+            print("Validation set: Corr : {:.3f} +/- {:.3f}. \
+                  R^2: {:.3f} +/- {:.3f}".format(
+                  rms['cc'], rms['cc_std'], rms['r2'], rms['r2_std']))
+        else:
+            rms = None
 
         print("""{} with {} fold(s) completed. \n
               Validation Performance: 
@@ -528,7 +443,7 @@ class BaseModel():
         self.update_log(rms=rms, prefix=mode)    
         #return self.cv_losses, self.cv_metrics
 
-
+            
     def prune_weights(self, increase_regularization=3.):
         stop_early = tf.keras.callbacks.EarlyStopping(monitor='val_loss',
                                                       min_delta=1e-6,
@@ -551,16 +466,6 @@ class BaseModel():
         weights = [np.random.permutation(w.flat).reshape(w.shape) for w in weights]
         self.km.set_weights(weights)
 
-
-    # def reinitialize_weights(self):
-    #     session = K.get_session()
-    #     print("Re-initializing weights")
-    #     for layer in self.km.layers: 
-    #         if hasattr(layer, 'kernel_initializer'):
-    #             layer.kernel.initializer.run(session=session)
-    #         if hasattr(layer, 'bias_initializer'):
-    #             layer.bias.initializer.run(session=session)
-                
 
     def plot_hist(self):
         """Plot loss history during training."""
@@ -696,6 +601,7 @@ class BaseModel():
         
         self.update_results()
         weights = {k: np.stack(self.cv_weights[k], -1) for k in self.cv_weights.keys()}
+        
         #Update and save meta file
         self.meta.update(data=self.dataset.h_params,
                          model_specs=self.specs,
@@ -744,7 +650,7 @@ class BaseModel():
 
         return out
 
-    def predict(self, dataset=None):
+    def predict(self, dataset=None, n_batches=1):
         """
         Returns
         -------
@@ -761,22 +667,24 @@ class BaseModel():
             dataset = self.dataset._build_dataset(dataset,
                                                  split=False,
                                                  test_batch=None,
-                                                 repeat=False)
+                                                 repeat=True)
         elif not isinstance(dataset, tf.data.Dataset):
             print("Specify dataset")
             return None, None
 
         X = []
         y = []
-
-        for row in dataset.take(1):
-            X.append(row[0])
-            y.append(row[1])
+        for batch_idx, (x, y_) in enumerate(dataset):
+            if batch_idx >= n_batches:
+                break
+            
+        
+            X.append(x)
+            y.append(y_)
 
         y_pred = self.km.predict(np.concatenate(X))
         y_true = np.concatenate(y)
 
-        #y_true = y_true.numpy()
         return y_true, y_pred
 
     def evaluate(self, dataset=False):
@@ -806,8 +714,6 @@ class BaseModel():
                                            steps=self.dataset.validation_steps,
                                            verbose=0)
         return  losses, metrics
-
-
 
 
 
@@ -884,6 +790,7 @@ class LFCNN(BaseModel):
             Output of the forward pass of the computational graph.
             Prediction of the target variable.
         """
+        #self.rng = tf.keras.layers.GaussianNoise(stddev=.1)
         self.dmx = DeMixing(size=self.specs['n_latent'], nonlin=tf.identity,
                             axis=3, specs=self.specs)
         self.dmx_out = self.dmx(self.inputs)
@@ -899,7 +806,7 @@ class LFCNN(BaseModel):
         self.pool = TempPooling(pooling=self.specs['pooling'],
                                   pool_type=self.specs['pool_type'],
                                   stride=self.specs['stride'],
-                                  padding='SAME',#self.specs['padding']
+                                  padding='SAME'
                                   )
         self.pooled = self.pool(self.tconv_out)
 
@@ -1409,28 +1316,11 @@ class LFCNN(BaseModel):
         patterns_struct['weights'] = weights
         patterns_struct['spectra'] = spectra
         patterns_struct['dcov'] = dcov
-        patterns_struct['ccms'] = {}#ccms
-        #Sx_tconv, Sx_dmx = self.patterns_cov_xy_hat(X, y, activations, weights)
+        patterns_struct['ccms'] = {}
+        
         Sx_tconv_ccm = []
-        #Sx_dmx_ccm = []
         Sx_fc_ccm = []
         patterns_cxy = []
-        # for class_y in range(self.out_dim):
-        #     class_ind = tf.squeeze(tf.where(tf.argmax(y, 1)==class_y))#[0]
-        #     Sx_tconv_ccm.append(Sx_tconv[class_ind, ...].mean(0))
-        #     #Sx_dmx_ccm.append(Sx_dmx[class_ind, ...].mean(0, keepdims=True))
-        #     #a = activations['tconv'].numpy()[class_ind, ...].mean(0)*weights['out_weights'][None, ..., class_y]
-        #     Sx_fc_ccm.append(activations['fc'].numpy()[class_ind, ...].mean(0, keepdims=True))
-        #     # patterns_cxy.append(np.dot(dcov['class_conditional'][class_y],
-        #     #                                Sx_dmx[class_ind, ...].mean(0)))
-        #     #patterns_cxy.append(np.dot(dcov['input_spatial'],
-        #     #                            Sx_dmx[class_ind, ...].mean(0)))
-        #ccms = {}
-        #ccms['tconv'] = np.concatenate(Sx_tconv_ccm, 0)
-        #ccms['dmx'] = np.concatenate(Sx_dmx_ccm, 0)
-        #ccms['fc'] = np.concatenate(Sx_fc_ccm, 0)
-        
-        
         
         patterns_struct['patterns'] = self._compute_combined_patterns(y, weights, activations, dcov)
 
@@ -1449,28 +1339,6 @@ class LFCNN(BaseModel):
         patterns = {}
         patterns['cov_xx'] = self.patterns_cov_xx(y, weights, activations, dcov)
 
-        #Sx_tconv, Sx_dmx = None, None#self.patterns_cov_xy_hat(X, y, activations, weights)
-        # Sx_tconv_ccm = []
-        # #Sx_dmx_ccm = []
-        # Sx_fc_ccm = []
-        # patterns_cxy = []
-        # for class_y in range(self.out_dim):
-        #     class_ind = tf.squeeze(tf.where(tf.argmax(y, 1)==class_y))#[0]
-        #     Sx_tconv_ccm.append(Sx_tconv[class_ind, ...].mean(0))
-        #     #Sx_dmx_ccm.append(Sx_dmx[class_ind, ...].mean(0, keepdims=True))
-        #     #a = activations['tconv'].numpy()[class_ind, ...].mean(0)*weights['out_weights'][None, ..., class_y]
-        #     Sx_fc_ccm.append(activations['fc'].numpy()[class_ind, ...].mean(0, keepdims=True))
-        #     # patterns_cxy.append(np.dot(dcov['class_conditional'][class_y],
-        #     #                                Sx_dmx[class_ind, ...].mean(0)))
-        #     #patterns_cxy.append(np.dot(dcov['input_spatial'],
-        #     #                            Sx_dmx[class_ind, ...].mean(0)))
-        # ccms = {}
-        # ccms['tconv'] = np.concatenate(Sx_tconv_ccm, 0)
-        #ccms['dmx'] = np.concatenate(Sx_dmx_ccm, 0)
-        #ccms['fc'] = np.concatenate(Sx_fc_ccm, 0)
-
-
-        #patterns['cov_xy'] = Sx_dmx
         patterns['pinv_w'] = self.patterns_pinv_w(y, weights, activations, dcov).mean(-1)
 
         patterns['wfc_mean'] = self.patterns_wfc_mean(y, weights, activations, dcov)
@@ -1506,7 +1374,6 @@ class LFCNN(BaseModel):
                                                         n_folds])
             
             for method in methods:
-            #n_folds = len(self.dataset.h_params['folds'][0])
                 self.cv_patterns[method]['spatial'] = np.zeros([n_ch,
                                                                 self.y_shape[0],
                                                                 n_folds])
@@ -2222,7 +2089,115 @@ class LFCNN(BaseModel):
     #     ax[i, jj].legend(frameon=False)
     # return f
 
+class LFCNNR(BaseModel):
+    """LF-CNN. Includes basic parameter interpretation options.
 
+    For details see [1].
+    References
+    ----------
+        [1] I. Zubarev, et al., Adaptive neural network classifier for
+        decoding MEG signals. Neuroimage. (2019) May 4;197:425-434
+    """
+    def __init__(self, meta, dataset=None, specs_prefix=False):
+        """
+
+        Parameters
+        ----------
+        Dataset : mneflow.Dataset
+
+        specs : dict
+                dictionary of model hyperparameters {
+
+        n_latent : int
+            Number of latent components.
+            Defaults to 32.
+
+        nonlin : callable
+            Activation function of the temporal convolution layer.
+            Defaults to tf.nn.relu
+
+        filter_length : int
+            Length of spatio-temporal kernels in the temporal
+            convolution layer. Defaults to 7.
+
+        pooling : int
+            Pooling factor of the max pooling layer. Defaults to 2
+
+        pool_type : str {'avg', 'max'}
+            Type of pooling operation. Defaults to 'max'.
+
+        padding : str {'SAME', 'FULL', 'VALID'}
+            Convolution padding. Defaults to 'SAME'.}
+
+        stride : int
+        Stride of the max pooling layer. Defaults to 1.
+        """
+        self.scope = 'lfcnn'
+        #specs = meta.model_specs
+        meta.model_specs.setdefault('filter_length', 7)
+        meta.model_specs.setdefault('n_latent', 32)
+        meta.model_specs.setdefault('pooling', 2)
+        meta.model_specs.setdefault('stride', 2)
+        meta.model_specs.setdefault('padding', 'SAME')
+        meta.model_specs.setdefault('pool_type', 'max')
+        meta.model_specs.setdefault('nonlin', tf.nn.relu)
+        meta.model_specs.setdefault('l1_lambda', 3e-4)
+        meta.model_specs.setdefault('l2_lambda', 0.)
+        meta.model_specs.setdefault('l1_scope', ['fc', 'demix', 'lf_conv'])
+        meta.model_specs.setdefault('l2_scope', [])
+        meta.model_specs.setdefault('unitnorm_scope', [])
+        meta.model_specs['scope'] = self.scope
+        #specs.setdefault('model_path',  self.dataset.h_params['save_path'])
+        super(LFCNNR, self).__init__(meta, dataset, specs_prefix)
+
+
+
+    def build_graph(self):
+        """Build computational graph using defined placeholder `self.X`
+        as input.
+
+        Returns
+        --------
+        y_pred : tf.Tensor
+            Output of the forward pass of the computational graph.
+            Prediction of the target variable.
+        """
+        #self.rng = tf.keras.layers.GaussianNoise(stddev=.1)
+        self.dmx = DeMixing(size=self.specs['n_latent'], nonlin=tf.identity,
+                            axis=3, specs=self.specs)
+        self.dmx_out = self.dmx(self.inputs)
+
+        self.tconv = LFTConv(size=self.specs['n_latent'],
+                             nonlin=self.specs['nonlin'],
+                             filter_length=self.specs['filter_length'],
+                             padding=self.specs['padding'],
+                             specs=self.specs
+                             )
+        self.tconv_out = self.tconv(self.dmx_out)
+
+        self.pool = TempPooling(pooling=self.specs['pooling'],
+                                  pool_type=self.specs['pool_type'],
+                                  stride=self.specs['stride'],
+                                  padding='SAME',#self.specs['padding']
+                                  )
+        self.pooled = self.pool(self.tconv_out)
+
+        # dropout0 = Dropout(self.specs['dropout'],
+        #                   noise_shape=None)(self.pooled)
+
+        # self.fc1 = FullyConnected(size=self.specs['n_latent'], nonlin=tf.identity,
+        #                     specs=self.specs)(self.pooled)
+        
+        dropout1 = Dropout(self.specs['dropout'],
+                          noise_shape=None)(self.pooled)
+        
+        self.fin_fc = FullyConnected(size=self.out_dim, nonlin=tf.identity,
+                            specs=self.specs)
+
+        y_pred = self.fin_fc(dropout1)
+
+        return y_pred
+    
 class VARCNN(BaseModel):
     """VAR-CNN.
 
@@ -3078,4 +3053,134 @@ class EEGNet(BaseModel):
 
 #         return fig
 
+class NoisyTrainer:
+    def __init__(self, model, noise_std=.1, patience=5, min_delta=0.001):
+        """
+        Initialize the trainer with a model, noise parameters, and early stopping configuration
+        
+        Args:
+            model: Keras model
+            noise_std: Standard deviation of Gaussian noise to add to labels
+            patience: Number of epochs with no improvement after which training will be stopped
+            min_delta: Minimum change in monitored metric to qualify as an improvement
+        """
+        self.model = model
+        self.noise_std = noise_std
+        self.loss_fn = tf.keras.losses.MeanSquaredError()
+        self.metric = tf.keras.metrics.MeanAbsoluteError()
+        self.optimizer = tf.keras.optimizers.Adam()
+        
+        # Early stopping parameters
+        self.patience = patience
+        self.min_delta = min_delta
+        self.best_val_loss = float('inf')
+        self.epochs_without_improvement = 0
+    
+    @tf.function    
+    def add_noise_to_labels(self, labels):
+        """Add Gaussian noise to the labels"""
+        noise = tf.random.normal(shape=tf.shape(labels), 
+                               mean=0.0, 
+                               stddev=self.noise_std)
+        return labels + noise
+    
+    @tf.function
+    def train_step(self, x, y):
+        """Single training step with noisy labels"""
+        # Add noise to labels
+        noisy_y = self.add_noise_to_labels(y)
+        
+        with tf.GradientTape() as tape:
+            # Forward pass
+            predictions = self.model(x, training=True)
+            # Calculate loss using noisy labels
+            loss = self.loss_fn(noisy_y, predictions)
+            
+        # Calculate gradients
+        gradients = tape.gradient(loss, self.model.trainable_variables)
+        # Update weights
+        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        
+        return loss
+    
+    @tf.function
+    def validation_step(self, x, y):
+        """Validation step without noise and training mode"""
+        predictions = self.model(x, training=False)
+        val_loss = self.loss_fn(y, predictions)
+        metric = self.metric(y, predictions)
+        return val_loss, metric
+    
+    def train(self, train_dataset, val_dataset=None, epochs=1000, eval_step=5, 
+              val_steps=1):
+        """
+        Train the model with optional validation and early stopping
+        
+        Args:
+            train_dataset: Training dataset
+            val_dataset: Optional validation dataset
+            epochs: Maximum number of training epochs
+        
+        Returns:
+            Training history dictionary
+        """
+        training_history = {
+            'train_loss': [],
+            'val_loss': []
+        }
+        
+        if val_dataset is not None:
+            val_iter = iter(val_dataset)
+        for epoch in range(epochs):
+            train_iter = iter(train_dataset)
 
+            # Train until it's time to evaluate
+            train_losses = []
+            for i in range(eval_step):
+                x_batch, y_batch = next(train_iter)
+                loss = self.train_step(x_batch, y_batch)
+                train_losses.append(float(loss))
+                
+            if val_dataset is not None:
+            #Evalute on validation set
+                val_losses = []
+                val_metrics = []
+                for i in range(val_steps):
+                    x_val_batch, y_val_batch = next(val_iter)
+                    val_loss, val_metric = self.validation_step(x_val_batch, y_val_batch)
+                    val_losses.append(float(val_loss))
+                    val_metrics.append(float(val_metric))
+            
+            #Calculate output
+            avg_train_loss = np.mean(train_losses)
+            training_history['train_loss'].append(avg_train_loss)
+            avg_val_loss = np.mean(val_losses)
+            avg_val_metric = np.mean(val_metrics)
+            training_history['val_loss'].append(avg_val_loss)
+                
+            # Early stopping
+            if avg_val_loss < self.best_val_loss - self.min_delta:
+                #print("Eval decr")
+                self.best_val_loss = avg_val_loss
+                self.epochs_without_improvement = 0
+                # Optionally save the best model
+                # self.model.save_weights('best_model.weights.h5')
+            else:
+                self.epochs_without_improvement += 1
+                #print("Eval no decr")
+            
+            print(f"Epoch {epoch + 1}: "
+                  f"Train Loss = {avg_train_loss:.4f}, "
+                  f"Val Loss = {avg_val_loss:.4f}, "
+                  f"Val Metric = {avg_val_metric:.4f}")
+            train_dataset.shuffle(10000)
+            # Check for early stopping
+            if self.epochs_without_improvement >= self.patience:
+                print(f"Early stopping triggered after {epoch + 1} epochs")
+                break
+                
+        
+        return training_history
+
+
+        

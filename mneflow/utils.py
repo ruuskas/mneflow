@@ -175,7 +175,7 @@ class MetaData():
             lo = sensor_layout
             
             
-        if channel_subset:
+        if np.any(channel_subset):
             topos = topos[channel_subset, :]
         else:
             channel_subset = np.arange(0,  topos.shape[0], 1.)
@@ -450,10 +450,8 @@ class MetaData():
             class_subset = np.arange(0,  topos.shape[1], 1.)
         
             
-        if channel_subset:
-            topos = topos[channel_subset, :, :]
-        else:
-            channel_subset = np.arange(0,  topos.shape[0], 1.)
+        if not np.any(channel_subset):
+            channel_subset = np.arange(0,  topos.shape[0], 1, dtype=int)
         
         _, n_y, n_folds = topos.shape
         

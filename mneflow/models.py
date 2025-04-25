@@ -450,7 +450,8 @@ class BaseModel():
                       np.std(self.cv_test_metrics)))
         
         self.meta.train_params.update({"trained":True})
-        self.update_log(rms=rms, prefix=mode)    
+        self.update_log(rms=rms, prefix=mode)
+        self.save()
         #return self.cv_losses, self.cv_metrics
 
             

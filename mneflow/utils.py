@@ -10,6 +10,7 @@ import warnings
 import numpy as np
 import tensorflow as tf
 import scipy.io as sio
+from scipy.signal import freqz, welch
 import mne
 from mneflow import models
 from matplotlib import pyplot as plt
@@ -177,11 +178,79 @@ class MetaData():
         fake_evoked = mne.evoked.EvokedArray(topos, info)
         return fake_evoked
     
-    def explore_components(self, sorting='output_corr',
-                         integrate=['vars', 'folds'], info=None, 
+    def get_feature_relevances(self, sorting='output_corr', 
+                               integrate=['timepoints'], 
+                               fold=0, diff=True):
+        """
+        Returns
+        -------
+        
+        F : np.array
+            (n_t_pooled, n_latent, n_classes, n_folds)
+            
+        """
+        # get feature relevance
+        if sorting == 'combined':
+            F = (self.patterns['weight']['feature_relevance']
+                 * self.patterns['ccms']['tconv']
+                 #* np.sign(self.patterns['output_corr']['feature_relevance'])
+                 )# - self.weights['tconv_b'][np.newaxis, :, np.newaxis, :]
+        else:
+            F = self.patterns[sorting]['feature_relevance']
+        
+        #
+        
+        Fd = []
+        if diff:
+            for i in range(F.shape[2]):
+                F_other = np.delete(F, i, axis=2).max(2)
+                Fd.append(F[:, :, i, :] - F_other)
+            F = np.stack(Fd, axis=2)
+            F = np.maximum(F, 0)
+            
+        names = ['Time Points', 'Components', 'Classes', 'Folds']
+        
+        if 'folds' in integrate:
+            F = F.mean(3, keepdims=True)
+            names.pop(names.index('Folds'))
+        if 'timepoints' in integrate:
+            F = F.max(0, keepdims=True)
+            names.pop(names.index('Time Points'))
+        if 'vars' in integrate:
+            F = F.sum(2, keepdims=True)
+            names.pop(names.index('Classes'))
+        if 'components' in integrate:
+            F = F.sum(1, keepdims=True)
+            names.pop(names.index('Components'))
+        
+        # Fd = []
+        # if diff:
+        #     for i in range(F.shape[1]):
+        #         F_other = np.delete(F, i, axis=1).mean(1)
+        #         Fd.append(F[ :, i, :] - F_other)
+        #     F = np.stack(Fd, axis=1)
+        #     F = np.maximum(F, 0)
+        
+        F = np.squeeze(F)
+        print("Relevances: ", names, F.shape)
+        return F, names
+    
+    #def explore_patterns():
+        
+    
+    def explore_components(self, sorting='output_corr', info=None, 
                          sensor_layout='Vectorview-grad',
-                         class_names=None):
-        """Plots the weights of the output layer.
+                         class_names=None, diff=True,
+                         n_cols=1):
+        """
+        Ineractive plot of feature relevances for each fold/subplot 
+        max-pooled over all timepoints.
+        
+        Clicking each non-zero square returns a new figure with:
+            -Spatial pattern of the selected single component
+            -Frequency response of the temporal convolution filter
+            -Temporal convolution filter coeffs
+            -Relevance of the same component for other classes
 
         Parameters
         ----------
@@ -198,150 +267,135 @@ class MetaData():
             Imshow [n_latent, y_shape]
 
         """
-
+        #TODO: joint colorbar
         def _onclick_component(event):
             
             x_ind = np.maximum(np.round(event.xdata, 0).astype(int), 0)
             y_ind = np.maximum(np.round(event.ydata).astype(int), 0)
+            fold_ind = int(event.inaxes.get_title().split(' ')[-1])
             
-
-
             f1, ax = plt.subplots(2,2, tight_layout=True)
-            #f1.set_layout_engine('constrained')
-            f1.suptitle("{}: {}  {}: {}"
-                  .format(names[0][:-1], x_ind, names[1][:-1], y_ind))
-
-            # a = np.dot(self.patterns['dcov']['class_conditional'][x_ind].mean(-1),
-            #            self.patterns['weights']['dmx'])
-
-            self.fake_evoked_interactive.data[:, y_ind] = topos[:, y_ind]
+            f1.suptitle("{}: {}  {}: {}  {}:{}"
+                  .format(names[0][:-1], x_ind, names[1][:-1], y_ind,
+                          "Fold", fold_ind))
+            
+            topo = topos[:, y_ind, fold_ind]
+            #prec_yhat = np.linalg.inv(self.patterns['ccms']['cov_y_hat'][:, :, fold_ind])
+            pattern = np.dot(dcov[:, :, y_ind], topo)
+            self.fake_evoked_interactive.data[:, y_ind] = pattern
             self.fake_evoked_interactive.plot_topomap(times=[y_ind],
                                                       axes=ax[0, 0],
                                                       colorbar=False,
                                                       time_format='Spatial activation pattern, [au]'
                                                       )
-            psd = psds[:, y_ind].T
-            freq_response = freq_responses[:, y_ind].T
-            out_psd = psd*freq_response
-            psd /= np.maximum(np.sum(psd), 1e-9)
-            out_psd /= np.maximum(np.sum(out_psd), 1e-9)
-            #freq /= np.maximum(np.sum(out_psd), 1e-9)
-            #ax[1,].clear()
-            ax[0,1].semilogy(self.patterns['freqs'], psd,
-                         label='Input RPS')
-            ax[0,1].semilogy(self.patterns['freqs'], out_psd,
-                         label='Output RPS')
-            #ax[0,1].semilogy(patterns_struct['spectra']['freqs'], freq_response,
-            #             label='Freq_response')
-            ax[0,1].set_xlim(1, 125.)
-            ax[0,1].set_ylim(1e-6, 1.)
+            
+            flt = self.weights['tconv'][x_ind, :, fold_ind]
+            
+            #flt -= flt.mean()
+            w, h = freqz(flt, 1, worN=128, fs = self.data['fs'])
+            freq_response = np.array(np.abs(h))
+            freq_response = freq_response / np.sum(freq_response, 0, keepdims=True)
+            
+            ax[0,1].plot(self.patterns['freqs'], freq_response,
+                        label='Freq_response')
+            ax[0,1].set_xlim(1, 70.)
             ax[0,1].legend(frameon=False)
             ax[0,1].set_title('Relative power spectra')
 
 
-            #ax[1,0].stem(tconv_kernels[:, y_ind])
+            ax[1,0].stem(flt)
             ax[1,0].set_title('Temporal convolution kernel coefficients')
-            if trans:
-                ax[1,1].plot(F[y_ind, :], 'ks')
-                ax[1,1].plot(y_ind, F[y_ind, x_ind], 'rs')
-            else:                    
-                ax[1,1].plot(F[y_ind, :], 'ks')
-                ax[1,1].plot(x_ind, F[y_ind, x_ind], 'rs')
-            ax[1,1].set_title('{} per {}. Red={}'.format(sorting, names[0][:-1], x_ind))
+            ax[1,1].stem(np.arange(F.shape[1]), F[x_ind, :, fold_ind], 'k')
+            ax[1,1].plot(y_ind, F[x_ind, y_ind, fold_ind], 'rs')
+            ax[1,1].set_title('Contribution to each class')
             ax[1,1].set_xlabel(names[0])
 
-
-
-        # get feature relevance
-        F = self.patterns[sorting]['feature_relevance']
-        ax = 1
-        names = ['Time Points', 'Components', 'Classes', 'Folds']
-        if 'folds' in integrate:
-            F = F.mean(3, keepdims=True)
-            names.pop(names.index('Folds'))
-        if 'timepoints' in integrate:
-            F = F.max(0, keepdims=True)
-            ax = 0
-            names.pop(names.index('Time Points'))
-        if 'vars' in integrate:
-            F = F.sum(2, keepdims=True)
-            names.pop(names.index('Classes'))
-        if 'components' in integrate:
-            F = F.sum(1, keepdims=True)
-            names.pop(names.index('Components'))
+        F, names = self.get_feature_relevances(sorting=sorting, 
+                                               integrate=['timepoints'],
+                                               diff=diff) #(n_components, n_classes, n_folds)
         
-        #print(names)
         
-        F = np.squeeze(F)
-        while F.ndim < 2:
-            F = np.expand_dims(F, -1)
-            ax = 0
+        
+        n_folds = len(self.data['folds'][0])
+        if n_folds%n_cols != 0:
+            n_rows = n_folds//n_cols + 1
+        else:
+            n_rows = n_folds//n_cols
             
-        if F.ndim > 2:
-            print("""Integrate: {} returned shape {}. \n
-                  Can only plot 2 dimensions!""".format(integrate, F.shape))
-            return
-        if 'timepoints' in integrate:
-            F = F.T
-            trans = False
-            ax = 1 - ax
-            print(names)
-        else:
-            trans = False
-            names = names[::-1]
+        f, ax = plt.subplots(n_rows, n_cols)
+        ax = ax.flatten()
         
-        # if F.shape[1] < F.shape[0]:
-        #     F = F.T
-        #     
-                    
-        inds = np.argmax(F, ax)
         
-        print(inds)
-        # new_topos = [np.dot(self.patterns['dcov']['input_spatial'][:, :, i], 
-        #                     self.weights['dmx'][:, ind, i])
-        #               for i, ind in enumerate(inds)]
-        #new_topos = np.concatenate(new_topos, axis=0).T
+        for jj in range(n_folds):
+            ax[jj].set_title('Fold {}'.format(jj))
         
+            axis = 0
+            while F.ndim < 2:
+                F = np.expand_dims(F, -1)
+                axis = 0
+                
+            # if F.ndim != 3:
+            #     print("""Integrate: {} returned shape {}. \n
+            #           Can only plot 2 dimensions!""".format(integrate, F.shape))
+            #     return
 
-        #print(new_topos.shape)
-        
+            # if 'timepoints' in integrate:
+            #     #F = F.T
+            #     trans = False
+            #     #ax = 1 - ax
+            #     print(names)
+            # else:
+            #     trans = False
+            #     names = names[::-1]
+            
+            inds = np.argmax(F[:, :, jj], axis)
+            
+            
+            topos = self.weights['dmx']
+  
+            self.fake_evoked_interactive = self.make_fake_evoked(topos[:, :, 0], sensor_layout)
+            
+            dcov = self.patterns['dcov']['class_conditional'].mean(-1)
+            #dcov = self.patterns['dcov']['input_spatial'].mean(-1)
+            vmin = np.min(F)
+            vmax = np.max(F)
+            
+            ax[jj].imshow(F[:, :, jj].T, cmap='bone_r', vmin=vmin, vmax=vmax)
 
-        #psds = patterns_struct['spectra']['psds']
-        topos =  np.squeeze(self.patterns[sorting]['spatial'])#.mean(-1)
-        #print(topos.shape)
-        psds = np.squeeze(self.patterns[sorting]['psds'])#.mean(-1)
-        freq_responses = np.squeeze(self.patterns[sorting]['temporal'])#.mean(-1)
-        #tconv_kernels = self.patterns['weights']['tconv']
-        self.fake_evoked_interactive = self.make_fake_evoked(topos, sensor_layout)
-
-        vmin = np.min(F)
-        vmax = np.max(F)
-
-        f = plt.figure()
-        ax = f.gca()
-        
-        im = ax.imshow(F, cmap='bone_r', vmin=vmin, vmax=vmax)
-        if trans:
-            r = [ptch.Rectangle((i - .5, ind - .5), width=1,
-                                height=1, angle=0.0, facecolor='none') for i, ind in enumerate(inds)]
-        else:
+            f.set_size_inches(16,4*n_folds)
             r = [ptch.Rectangle((ind - .5, i - .5), width=1,
-                                height=1, angle=0.0, facecolor='none') for i, ind in enumerate(inds)]
-
-        pc = collections.PatchCollection(r, facecolor='none', alpha=.5,
-                                          edgecolor='red')
-        #ax = f.gca()
-        ax.add_collection(pc)
-        ax.set_ylabel(names[1])
-        ax.set_xlabel(names[0])
-        ax.set_title('Component relevance map: {} (Clickable)'.format(sorting))
-
-        f.colorbar(im)
+                                height=1, angle=0.0, facecolor='none') 
+                 for i, ind in enumerate(inds)]
+    
+            pc = collections.PatchCollection(r, facecolor='red', alpha=.33,
+                                              edgecolor='red')
+            ax[jj].add_collection(pc)
+            ax[jj].set_ylabel(names[1])
+            ax[jj].set_xlabel(names[0])
+        
+        f.suptitle('Component relevance map: {} (Clickable)'.format(sorting))
         f.canvas.mpl_connect('button_press_event', _onclick_component)
         f.show()
         return f
     
-    def plot_topos(self, topos, sensor_layout='Vectorview-mag', class_subset=None):
+    def explore_patterns():
+        """
+        Ineractive plot of combined activation patterns for each class/subplot 
+        averaged over all folds.
+        
+        Clicking each non-zero square returns a new figure with:
+            -Spatial pattern across all folds
+        
+
+        """
+        
+        
+        
+        
+    
+    def plot_spatial_patterns(self, method='combined', 
+                              sensor_layout='Vectorview-mag', 
+                              class_subset=None):
         """
         Plot any spatial distribution in the sensor space.
         TODO: Interpolation??
@@ -351,41 +405,162 @@ class MetaData():
         ----------
         topos : np.array
             [n_ch, n_classes, ...]
+        
         sensor_layout : TYPE, optional
             DESCRIPTION. The default is 'Vectorview-mag'.
+        
         class_subset  : np.array, optional
+        
+        diff : bool, True
 
         Returns
         -------
         None.
 
         """
- 
+        topos = self.get_spatial_patterns(method=method)
+        
+        if class_subset:
+            topos = topos[:, class_subset, :]
+        else:
+            class_subset = np.arange(0,  topos.shape[1], 1.)
+        
+        _, n_y, n_folds = topos.shape
+        
         if topos.ndim > 2:
-            topos = topos.mean(-1)
-        topos_new = topos / topos.std(0, keepdims=True)
+            topos_plt = topos.mean(-1)
+            
+        topos_plt = topos_plt / np.maximum(topos_plt.std(0, keepdims=True), 1e-15)
+        
+        fake_evoked = self.make_fake_evoked(topos_plt, sensor_layout)
 
-        n = topos.shape[1]
-
-        if class_subset is None:
-            class_subset = np.arange(0,  n, 1.)
-
-        fake_evoked = self.make_fake_evoked(topos_new, sensor_layout)
-
-        ft = fake_evoked.plot_topomap(times=class_subset,
+        ft = fake_evoked.plot_topomap(times=np.arange(n_y),
                                     colorbar=True,
                                     scalings=1,
                                     time_format="Class %g",
                                     outlines='head',
                                     #vlim= np.percentile(topos, [5, 95])
                                     )
+        ft.set_size_inches(len(class_subset)*3, 3)
+        
+        def _show_folds(event):
+
+            y_ind = int(event.inaxes.get_title().split(' ')[-1])
+            print("Showing folds on class: {}".format(y_ind))
+            stds = np.maximum(topos[:, y_ind, :].std(0), 1e-15)
+            topos_f = topos[:, y_ind, :] / stds[None, :]
+            _evoked = self.make_fake_evoked(topos_f, sensor_layout)
+            _evoked.plot_topomap(times=np.arange(n_folds),
+                                        #colorbar=True,
+                                        title='Class #{}'.format(class_subset[y_ind]),
+                                        scalings=1,
+                                        time_format="Fold %g",
+                                        outlines='head',
+                                        #vlim= np.percentile(topos, [5, 95])
+                                        )
+            
+            
+            
         #ft.show()
+        #ft.suptitle('Component relevance map: {} (Clickable)'.format(sorting))
+        ft.canvas.mpl_connect('button_press_event', _show_folds)
+        ft.show()
         return ft
     
-    def plot_combined_pattern(self):
-        return
+    def get_spatial_patterns(self, method='combined', diff=True):
+        #TODO: return single patterns
+        #TODO: add y_cov
+        
+        if method in ['weight', 'output_corr', 'compwise_loss']:
+            #Single-component patterns are pre collected during training
+            patterns =  self.patterns[method]['spatial']
+            #print(patterns.shape)
+            
+        elif method == 'combined':
+                W = self.weights['dmx'] #(n_ch, n_components, n_folds)
+                dcov = self.patterns['dcov']['class_conditional'] # (n_ch, n_ch, n_classes, folds)
+                ycov = self.patterns['ccms']['cov_y_hat'] #(n_classes, n_classes, n_folds)
+                F, names = self.get_feature_relevances(sorting=method, 
+                                                integrate=['timepoints'],
+                                                diff=diff) #(n_components, n_classes, n_folds)
+                
+                n_components, n_classes, n_folds = F.shape
+                activation_patterns = []
+                
+                for y_ind in range(n_classes):
+                    topos = []
+                    for fold_ind in range(n_folds):
+                        #Computed weighted sum of spatial patterns weighted by their relevance
+                        topo = np.dot(dcov[..., y_ind, fold_ind], W[..., fold_ind]) # (n_ch, n_components)
+                        topos.append(topo) 
+                    topos = np.stack(topos, 2) # (n_ch, n_components, n_folds)
+                    pattern = np.sum(topos * F[None, :, y_ind, :], 1) #weighted sum over components
+                    activation_patterns.append(pattern)
+                patterns = np.stack(activation_patterns, 1) #(n_ch, n_y, n_folds)
+        else:
+            print("Method {} not implmented".format(method))
+            patterns = None
+        return patterns
     
-    def plot_spectra(self, method='output_corr', log=True, savefig=False):
+    def get_timecourse(self, method='weight'):
+        
+        # if average_over == 'folds':
+        #     axis = 2
+        # elif average_over == 'vars':
+        #     axis = 0
+        
+            
+        activations = self.patterns['ccms']['tconv']
+        waveforms = self.patterns['ccms']['dmx']
+        #get relevances and corresponding filter coeffificents
+        relevances = self.patterns[method]['feature_relevance']
+        kernels = self.weights['tconv']#.transpose([0, 2, 1])
+        
+        #get component index for each fold
+        component_inds = np.argmax(np.max(relevances, axis=0), axis=0)
+        
+        n_y = np.prod(self.data['y_shape'])
+        
+        #aggregate over folds
+        n_folds = len(self.data['folds'][0])
+        
+        tconv_weights = np.stack([kernels[component_inds[:, i], :, i]
+                                  for i in range(n_folds)], -1) #n_classes, n_folds, filter_length
+        cc_act = np.stack([np.stack([activations[:, component_inds[jj, i], jj, i]
+                  for jj in range(n_y)], -1) for i in range(n_folds)], -1) # n_t_pooled, n_classes, n_folds
+        
+        cc_waveforms = np.stack([np.stack([waveforms[:, component_inds[jj, i], jj, i]
+                  for jj in range(n_y)], -1) for i in range(n_folds)], -1) # n_t, n_classes, n_folds
+
+        
+        return cc_act, cc_waveforms, tconv_weights, component_inds
+    
+    def get_spectra(self, method='weight'):
+        #TODO: Implement 'combined'
+        
+        if method in ['weight', 'output_corr', 'compwise_loss']:
+            #Single-component patterns are pre collected during training
+            freq_responses =  self.patterns['weight']['temporal'] #n_freq, n_components, n_folds
+            psds =  self.patterns['weight']['psds'] #n_freq, n_components, n_folds
+            
+        elif method == 'combined':
+                # w = self.weights['tconv'] #(n_ch, n_components, n_folds)
+                # dcov = self.patterns['dcov']['class_conditional'] # (n_ch, n_ch, n_classes, folds)
+                # ycov = self.patterns['ccms']['cov_y_hat'] #(n_classes, n_classes, n_folds)
+                # F, names = self.get_feature_relevances(sorting=method, 
+                #                                 integrate=['timepoints'],
+                #                                 diff=diff) #(n_components, n_classes, n_folds)
+            print("Not implmented")
+            freq_responses, psds = None, None
+        
+        return freq_responses, psds
+        
+    
+    def plot_spectra(self, method='weight', 
+                     class_subset=None, 
+                     log=True, 
+                     freqs_lim=None):
+        #TODO: class names
         #def plot_spectra(self, patterns_struct, component_ind, ax, fs=None, loag=False):
         """Relative power spectra of a given latent componende before and after
             applying the convolution.
@@ -405,54 +580,192 @@ class MetaData():
             Apply log-transform to the spectra.
         """
 
+        freq_responses, psds = self.get_spectra(method=method)
+        h = freq_responses*psds
         
-        #self.fs = self.data['fs']
-
-        filters = self.patterns[method]['temporal'].mean(-1)
-        p_input = self.patterns[method]['psds'].mean(-1)
-        h = (self.patterns[method]['temporal']*self.patterns[method]['psds']).mean(-1)
-        h_std = (self.patterns[method]['temporal']*self.patterns[method]['psds']).std(-1)
-        n = p_input.shape[-1]
-        #p_input = p_input/p_input.sum(0, keepdims=True).mean(-1)
-
-        # w, h = freqz(filters, 1, worN=self.nfft)
-        # fr1 = w/np.pi*self.fs/2
-        # h0 = p_input*np.abs(h)
-        f, ax = plt.subplots(1, n, sharey=True)
-        for i in range(n):
-            #h = p_input[:, i]*filters[:, i]
-            if log:
-                ax[i].semilogy(self.patterns['freqs'], p_input[:, i],
-                               label='Filter input RPS')
-                ax[i].semilogy(self.patterns['freqs'], h[:, i]/np.sum(h[:, i]),
-                                    label='Fitler output RPS', color='tab:orange')
-                # ax[i].semilogy(self.patterns['freqs'], filters[:, i],
-                #                label='Freq response RPS')
-            else:
-                ax[i].plot(self.patterns['freqs'], 
-                           p_input[:, i] / np.sum(p_input[:, i]),
-                           label='Filter input RPS')
-                ax[i].plot(self.patterns['freqs'], h[:, i]/np.sum(h[:, i]), 
-                           label='Fitler output RPS', 
-                           color='tab:orange')
-                ax[i].fill_between(self.patterns['freqs'], 
-                                   h[:, i] / np.sum(h[:, i]) + h_std[:, i], 
-                                   h[:, i] / np.sum(h[:, i]) - h_std[:, i], 
-                                   label='fold variation', color='tab:orange', 
-                                   alpha=.25)
-                # ax[i].plot(self.patterns['freqs'], filters[:, i] / np.sum(filters[:, i]),
-                #                 label='Freq response')
-            ax[i].set_xlim(1, 90)
-        if i == n - 1:
+        if class_subset:
+            h = h[:, class_subset, :]
+            freq_responses = freq_responses[:, class_subset, :]
+            psds = psds[:, class_subset, :]
+            
+        else:
+            class_subset = np.arange(0,  psds.shape[1], 1.)
+        
+        n_freq, n_y, n_folds = h.shape
+      
+        psds /= np.sum(psds, 0, keepdims=True)
+        h /= np.sum(h, 0, keepdims=True)
+        freq_responses /= np.sum(freq_responses**2, 0, keepdims=True)
+        
+        if freqs_lim:
+            #ax[i].set_xlim(freqs_lim[0], freqs_lim[1])
+            vmin = np.min(psds[freqs_lim[0] : freqs_lim[1], :])
+            vmax = np.max(h[freqs_lim[0] : freqs_lim[1], :])
+            
+        else:
+            vmin = np.min(psds)
+            vmax = np.max(h)
+        #print(vmin, vmax)
+            
+        f, ax = plt.subplots(1, n_y, sharey=True, figsize=(3*n_y, 4))
+        #f.set_size()
+        for i in range(n_y):
+            h_std = np.std(h[:, i], -1)
+            inp_std = np.std(psds[:, i], -1)
+            self.plot_temporal_pattern(psds[:, i].mean(-1), 
+                                       h[:, i].mean(-1), 
+                                       freq_responses[:, i].mean(-1),
+                                       log=log, freqs_lim=freqs_lim, 
+                                       vlim = (vmin, vmax), ax=ax[i],
+                                       h_std=h_std, inp_std=inp_std)
+            
+               
+        if i == n_y - 1:
             ax[i].legend(frameon=False)
-        if savefig:
-            figname = '-'.join([self.meta.data['path'] + self.model_specs['scope'], 
-                                self.meta.data['data_id'], method, "spectra.svg"])
-            f.savefig(figname, format='svg', transparent=True)
+        # if savefig:
+        #     figname = '-'.join([self.meta.data['path'] + self.model_specs['scope'], 
+        #                         self.meta.data['data_id'], method, "spectra.svg"])
+        #    f.savefig(figname, format='svg', transparent=True)
         return f
     
+    def plot_temporal_pattern(self, psd, h, freq_response, 
+                              log=False, vlim=None, 
+                              freqs_lim=None, ax=None,
+                              h_std = None, inp_std = None):
+        if not ax:
+            f = plt.figure()
+            ax = f.gca()
+        
+        if vlim:
+            vmin = vlim[0]
+            vmax = vlim[1]
+        elif freqs_lim:
+            #ax[i].set_xlim(freqs_lim[0], freqs_lim[1])
+            vmin = np.min(psd[freqs_lim[0] : freqs_lim[1]])
+            vmax = np.max(h[freqs_lim[0] : freqs_lim[1]])
+        else:
+            vmin = np.min(psd)
+            vmax = np.max(h)
+            
+        if log:
+            ax.semilogy(self.patterns['freqs'], psd,
+                           label='Filter input RPS')
+            ax.semilogy(self.patterns['freqs'], h,
+                                label='Fitler output RPS', color='tab:orange')
+            ax.semilogy(self.patterns['freqs'], freq_response,
+                            label='Freq response',
+                            color='tab:green', linestyle='dotted')
+            #vmin = np.log(vmin)
+            #vmax = np.log(vmax)
+        else:
+            ax.plot(self.patterns['freqs'], 
+                       psd,
+                       label='Filter input RPS')
+            ax.plot(self.patterns['freqs'], 
+                       h, 
+                       label='Fitler output RPS', 
+                       color='tab:orange')
+            if np.any(h_std):
+                ax.fill_between(self.patterns['freqs'], 
+                                    h / np.sum(h) + h_std, 
+                                    h / np.sum(h) - h_std, 
+                                    label='fold variation', color='tab:orange', 
+                                    alpha=.25)
+            if np.any(inp_std):
+                ax.fill_between(self.patterns['freqs'], 
+                                    psd + inp_std, 
+                                    psd - inp_std, 
+                                    label='fold variation', color='tab:blue', 
+                                    alpha=.25)
+                
+            ax.plot(self.patterns['freqs'], freq_response,
+                            label='Freq response', 
+                            color='tab:green', linestyle='dotted')
+            
+        ax.set_ylim(0.75*vmin, 1.25*vmax)
+        if freqs_lim:
+            ax.set_xlim(freqs_lim[0], freqs_lim[1])
+        return ax
     
-    def plot_waveforms(self):
+    
+    def plot_timecourses(self, method='weight', average_over='folds', 
+                         class_names=None, tmin=0, class_subset=None,
+                         freqs_lim=(1, 70)):
+        tcs = self.get_timecourse(method=method)
+        cc_activations, cc_waveforms, tconv_weights, comp_inds = tcs
+        
+        
+        if not class_subset:
+            class_subset = np.arange(0,  cc_activations.shape[2], 1)
+        else:
+            cc_waveforms = cc_waveforms[:, class_subset, :]
+            cc_activations = cc_activations[ :, class_subset, :]
+            
+            
+            
+        cc_waveforms -= cc_waveforms.min(0, keepdims=True)
+        cc_waveforms /= cc_waveforms.max(0, keepdims=True)
+        cc_waveforms = cc_waveforms.mean(-1)
+        n_folds = len(self.data['folds'][0])
+        
+        cc_activations -= np.min(cc_activations, 0, keepdims=True)
+        cc_activations /= np.max(cc_activations, 0, keepdims=True)
+        
+        n_classes = len(class_subset)
+        
+        if not class_names:
+            class_names = ["Class {}".format(i) for i in range(n_classes)]
+        
+        
+        f, ax = plt.subplots(n_classes, 2)
+        f.set_size_inches([16, 16])
+        n_t = self.data['n_t']
+
+        tstep = 1/float(self.data['fs'])
+        times = tmin + tstep*np.arange(n_t)
+        
+        freq_responses, psds = self.get_spectra(method=method)
+        h = freq_responses*psds
+        
+        psds /= np.sum(psds, 0, keepdims=True)
+        h /= np.sum(h, 0, keepdims=True)
+        freq_responses /= np.sum(freq_responses, 0, keepdims=True)
+        
+        for i in range(n_classes):
+            
+            # if apply_kernels:
+            #     scaled_waveforms = np.array([np.convolve(kern, wf, 'same')
+            #                 for kern, wf in zip(self.filters, self.waveforms)])
+            #     #scaled_waveforms =(scaled_waveforms - scaled_waveforms.mean(-1, keepdims=True))  / (2*scaled_waveforms.std(-1, keepdims=True))
+            # else:
+            #     #scaling = 3*np.mean(np.std(self.waveforms, -1))
+
+            #     scaled_waveforms = (waveforms - waveforms.mean(-1, keepdims=True))  / (2*waveforms.std(-1, keepdims=True))
+            # if bp_filter:
+            #     scaled_waveforms = scaled_waveforms.astype(np.float64)
+            #     scaled_waveforms = filter_data(scaled_waveforms,
+            #                                       self.dataset.h_params['fs'],
+            #                                       l_freq=bp_filter[0],
+            #                                       h_freq=bp_filter[1],
+            #                                       method='iir',
+            #                                       verbose=False)
+            ax[i, 0].plot(times, cc_waveforms[:, i], alpha=.75)
+                 
+            ax[i, 0].pcolor(times[::self.model_specs['stride']], np.arange(0, 2), 
+                            np.mean(cc_activations[:, i, :], -1, keepdims=True).T,
+                            cmap='cividis')
+            
+            #ax[i, 1].stem(np.mean(tconv_weights[i, :],-1))
+            
+            
+            self.plot_temporal_pattern(psds[:, i].mean(-1), h[:, i].mean(-1), 
+                                       freq_responses[:, i].mean(-1),
+                                       ax = ax[i, 1], freqs_lim=freqs_lim,
+                                       h_std=h[:, i].std(-1),
+                                       inp_std=psds[:, i].std(-1))
+
+        
+        
         return
     
     
@@ -1128,6 +1441,7 @@ def produce_labels(y, return_stats=True):
                                            return_counts=True)
     total_counts = np.sum(counts)
     counts = counts/float(total_counts)
+    print(inv[inds], counts)
     class_proportions = {clss: cnt for clss, cnt in zip(inv[inds], counts)}
     orig_classes = {new: old for new, old in zip(inv[inds], classes)}
     if return_stats:

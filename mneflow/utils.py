@@ -169,10 +169,10 @@ class MetaData():
         
             
         if isinstance(sensor_layout, str):
-            lo = mne.channels.read_layout(sensor_layout)
+            layout = mne.channels.read_layout(sensor_layout)
             
         elif isinstance(sensor_layout, mne.channels.layout.Layout) and ch_type in ['mag', 'grad', 'eeg']:
-            lo = sensor_layout
+            layout = sensor_layout
             
             
         if np.any(channel_subset):
@@ -180,7 +180,7 @@ class MetaData():
         else:
             channel_subset = np.arange(0,  topos.shape[0], 1, dtype=int)
         
-        lo.pick(channel_subset)
+        lo = layout.pick(channel_subset)
         info = mne.create_info(lo.names, 1., ch_type)
         
         #lo = channels.generate_2d_layout(lo.pos)

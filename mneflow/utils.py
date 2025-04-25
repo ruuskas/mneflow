@@ -161,20 +161,31 @@ class MetaData():
         self.save(verbose=False)
         return
     
-    def make_fake_evoked(self, topos, sensor_layout, ch_type='mag'):
+    def make_fake_evoked(self, topos, sensor_layout, ch_type='mag',
+                         channel_subset=None):
         """
         
         """
+        
+            
         if isinstance(sensor_layout, str):
             lo = mne.channels.read_layout(sensor_layout)
-            info = mne.create_info(lo.names, 1., sensor_layout.split('-')[-1])
             
         elif isinstance(sensor_layout, mne.channels.layout.Layout) and ch_type in ['mag', 'grad', 'eeg']:
             lo = sensor_layout
-            info = mne.create_info(lo.names, 1., ch_type)
             
+            
+        if channel_subset:
+            topos = topos[channel_subset, :]
+        else:
+            channel_subset = np.arange(0,  topos.shape[0], 1.)
+        
+        lo.pick(channel_subset)
+        info = mne.create_info(lo.names, 1., ch_type)
+        
         #lo = channels.generate_2d_layout(lo.pos)
-            
+        #TODO: use mne.channels.find_layout
+        
         orig_xy = np.mean(lo.pos[:, :2], 0)
         for i, ch in enumerate(lo.names):
             if info['chs'][i]['ch_name'] == ch:
@@ -247,10 +258,11 @@ class MetaData():
     #def explore_patterns():
         
     
-    def explore_components(self, sorting='output_corr', info=None, 
-                         sensor_layout='Vectorview-grad',
-                         class_names=None, diff=True,
-                         n_cols=1):
+    def explore_components(self, sorting='output_corr', 
+                           info=None, 
+                           sensor_layout='Vectorview-grad',
+                           class_names=None, diff=True,
+                           n_cols=1):
         """
         Ineractive plot of feature relevances for each fold/subplot 
         max-pooled over all timepoints.
@@ -404,7 +416,8 @@ class MetaData():
     
     def plot_spatial_patterns(self, method='combined', 
                               sensor_layout='Vectorview-mag', 
-                              class_subset=None):
+                              class_subset=None,
+                              channel_subset=None):
         """
         Plot any spatial distribution in the sensor space.
         TODO: Interpolation??
@@ -420,6 +433,8 @@ class MetaData():
         
         class_subset  : np.array, optional
         
+        channel_subset  : np.array, optional
+        
         diff : bool, True
 
         Returns
@@ -434,6 +449,12 @@ class MetaData():
         else:
             class_subset = np.arange(0,  topos.shape[1], 1.)
         
+            
+        if channel_subset:
+            topos = topos[channel_subset, :, :]
+        else:
+            channel_subset = np.arange(0,  topos.shape[0], 1.)
+        
         _, n_y, n_folds = topos.shape
         
         if topos.ndim > 2:
@@ -441,7 +462,8 @@ class MetaData():
             
         topos_plt = topos_plt / np.maximum(topos_plt.std(0, keepdims=True), 1e-15)
         
-        fake_evoked = self.make_fake_evoked(topos_plt, sensor_layout)
+        fake_evoked = self.make_fake_evoked(topos_plt, sensor_layout,
+                                            channel_subset=channel_subset)
 
         ft = fake_evoked.plot_topomap(times=np.arange(n_y),
                                     colorbar=True,
@@ -458,7 +480,8 @@ class MetaData():
             print("Showing folds on class: {}".format(y_ind))
             stds = np.maximum(topos[:, y_ind, :].std(0), 1e-15)
             topos_f = topos[:, y_ind, :] / stds[None, :]
-            _evoked = self.make_fake_evoked(topos_f, sensor_layout)
+            _evoked = self.make_fake_evoked(topos_f, sensor_layout, 
+                                            channel_subset=channel_subset)
             _evoked.plot_topomap(times=np.arange(n_folds),
                                         #colorbar=True,
                                         title='Class #{}'.format(class_subset[y_ind]),
@@ -760,9 +783,9 @@ class MetaData():
             #                                       verbose=False)
             ax[i, 0].plot(times, cc_waveforms[:, i], alpha=.75)
                  
-            ax[i, 0].pcolor(times[::self.model_specs['stride']], np.arange(0, 2), 
-                            np.mean(cc_activations[:, i, :], -1, keepdims=True).T,
-                            cmap='cividis')
+            # ax[i, 0].pcolor(times[::self.model_specs['stride']], np.arange(0, 2), 
+            #                 np.mean(cc_activations[:, i, :], -1, keepdims=True).T,
+            #                 cmap='cividis')
             
             #ax[i, 1].stem(np.mean(tconv_weights[i, :],-1))
             

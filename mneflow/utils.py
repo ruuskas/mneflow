@@ -176,9 +176,9 @@ class MetaData():
             
             
         if np.any(channel_subset):
-            topos = topos[channel_subset, :]
+            ts = topos[channel_subset, :]
         else:
-            channel_subset = np.arange(0,  topos.shape[0], 1.)
+            channel_subset = np.arange(0,  topos.shape[0], 1, dtype=int)
         
         lo.pick(channel_subset)
         info = mne.create_info(lo.names, 1., ch_type)
@@ -195,7 +195,7 @@ class MetaData():
                 print("Channel name mismatch. info: {} vs lo: {}".format(
                     info['chs'][i]['ch_name'], ch))
         
-        fake_evoked = mne.evoked.EvokedArray(topos, info)
+        fake_evoked = mne.evoked.EvokedArray(ts, info)
         return fake_evoked
     
     def get_feature_relevances(self, sorting='output_corr', 
@@ -262,7 +262,8 @@ class MetaData():
                            info=None, 
                            sensor_layout='Vectorview-grad',
                            class_names=None, diff=True,
-                           n_cols=1):
+                           n_cols=1,
+                           channel_subset=None):
         """
         Ineractive plot of feature relevances for each fold/subplot 
         max-pooled over all timepoints.
@@ -303,7 +304,9 @@ class MetaData():
             topo = topos[:, y_ind, fold_ind]
             #prec_yhat = np.linalg.inv(self.patterns['ccms']['cov_y_hat'][:, :, fold_ind])
             pattern = np.dot(dcov[:, :, y_ind], topo)
-            self.fake_evoked_interactive.data[:, y_ind] = pattern
+            
+                
+            self.fake_evoked_interactive.data[:, y_ind] = pattern[channel_subset]
             self.fake_evoked_interactive.plot_topomap(times=[y_ind],
                                                       axes=ax[0, 0],
                                                       colorbar=False,
@@ -373,8 +376,12 @@ class MetaData():
             
             
             topos = self.weights['dmx']
+            
+            if not np.any(channel_subset):
+                channel_subset = np.arange(0,  topos.shape[0], 1, dtype=int)
   
-            self.fake_evoked_interactive = self.make_fake_evoked(topos[:, :, 0], sensor_layout)
+            self.fake_evoked_interactive = self.make_fake_evoked(topos[:, :, 0], sensor_layout,
+                                                                 channel_subset=channel_subset)
             
             dcov = self.patterns['dcov']['class_conditional'].mean(-1)
             #dcov = self.patterns['dcov']['input_spatial'].mean(-1)
@@ -447,7 +454,7 @@ class MetaData():
         if class_subset:
             topos = topos[:, class_subset, :]
         else:
-            class_subset = np.arange(0,  topos.shape[1], 1.)
+            class_subset = np.arange(0,  topos.shape[1], 1)
         
             
         if not np.any(channel_subset):
@@ -482,7 +489,7 @@ class MetaData():
                                             channel_subset=channel_subset)
             _evoked.plot_topomap(times=np.arange(n_folds),
                                         #colorbar=True,
-                                        title='Class #{}'.format(class_subset[y_ind]),
+                                        #time_format='Class #{}'.format(class_subset[y_ind]),
                                         scalings=1,
                                         time_format="Fold %g",
                                         outlines='head',

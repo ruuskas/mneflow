@@ -161,20 +161,29 @@ class MetaData():
         self.save(verbose=False)
         return
     
-    def make_fake_evoked(self, topos, sensor_layout):
-        if 'info' not in self.data.keys():
+    def make_fake_evoked(self, topos, sensor_layout, ch_type='mag'):
+        """
+        
+        """
+        if isinstance(sensor_layout, str):
             lo = mne.channels.read_layout(sensor_layout)
-            #lo = channels.generate_2d_layout(lo.pos)
             info = mne.create_info(lo.names, 1., sensor_layout.split('-')[-1])
-            orig_xy = np.mean(lo.pos[:, :2], 0)
-            for i, ch in enumerate(lo.names):
-                if info['chs'][i]['ch_name'] == ch:
-                    info['chs'][i]['loc'][:2] = (lo.pos[i, :2] - orig_xy)/4.5
-                    #info['chs'][i]['loc'][4:] = 0
-                else:
-                    print("Channel name mismatch. info: {} vs lo: {}".format(
-                        info['chs'][i]['ch_name'], ch))
-        #info['sfreq'] = 1
+            
+        elif isinstance(sensor_layout, mne.channels.layout.Layout) and ch_type in ['mag', 'grad', 'eeg']:
+            lo = sensor_layout
+            info = mne.create_info(lo.names, 1., ch_type)
+            
+        #lo = channels.generate_2d_layout(lo.pos)
+            
+        orig_xy = np.mean(lo.pos[:, :2], 0)
+        for i, ch in enumerate(lo.names):
+            if info['chs'][i]['ch_name'] == ch:
+                info['chs'][i]['loc'][:2] = (lo.pos[i, :2] - orig_xy)/4.5
+                #info['chs'][i]['loc'][4:] = 0
+            else:
+                print("Channel name mismatch. info: {} vs lo: {}".format(
+                    info['chs'][i]['ch_name'], ch))
+        
         fake_evoked = mne.evoked.EvokedArray(topos, info)
         return fake_evoked
     

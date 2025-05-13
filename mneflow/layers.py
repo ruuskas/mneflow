@@ -325,6 +325,150 @@ class LFTConv(BaseLayer):
                 except(AttributeError):
                     input_shape = x.shape
                     self.build(input_shape)
+                    
+@saving.register_keras_serializable(package="mneflow")
+class LFTConvTranspose(BaseLayer):
+    """
+    DepthWise temporal deconvolutional layer, interpreatble
+    
+    """
+    
+    def __init__(self, target_shape, 
+                 # scope='deconv',
+                 # nonlin=tf.nn.identity,
+                 filter_length=7, 
+                 padding='SAME',
+                 stride=2,
+                 #specs={},
+                 **args):
+        
+        self.scope = 'deconv'
+        self.padding = padding
+        
+        self.target_shape = target_shape
+        print(target_shape, self.target_shape)
+        #print(self.target_shape)
+        self.kernel_shape = [1, filter_length]
+        self.strides = [1, stride]
+        self.stride = stride
+        super(LFTConvTranspose, self).__init__(size=48, 
+                                               #scope=self.scope, 
+                                               nonlin=tf.identity,
+                                               specs={}
+                                               )
+        
+        #self.size = size
+        #self.filter_length = filter_length
+        
+
+    def get_config(self):
+
+        config = super(LFTConvTranspose, self).get_config()
+        config.update({'scope': self.scope,
+                        'filter_length': self.filter_length,
+                        'nonlin': self.nonlin, 'padding': self.padding, 
+                        'specs':self.specs})
+        return config
+    
+    @classmethod
+    def from_config(cls, config):
+        nonlin_config = config.pop("nonlin")
+        scope = config.pop("scope")
+        nonlin = saving.deserialize_keras_object(nonlin_config)
+        return cls(nonlin, **config)
+
+    def build(self, input_shape):
+        
+        #self.constraint = self._set_constraints(axis=1)
+        #self.reg = self._set_regularizer()
+        
+        self.input_shape = input_shape
+        print(self.target_shape)
+        self.n_channels = input_shape[-1]        
+        default_output_t = input_shape[2] * self.stride
+        diff_padding = default_output_t - self.target_shape[2]
+        self.n_pads = max(0, min(self.stride-1, diff_padding))
+        # Each channel gets its own transpose convolution
+        self.deconv_units = [tf.keras.layers.Conv2DTranspose(filters=1,  # Each channel processed independently
+                            kernel_size=self.kernel_shape,
+                            strides=self.stride,
+                            padding=[[0, 0], [0, 0],
+                                     [self.n_pads, 0], [0, 0]]) for i in range(self.n_channels)]
+            
+        super(LFTConvTranspose).__init__()
+        # self.filters = [self.add_weight(shape=self.kernel_shape,
+        #                                initializer='he_uniform',
+        #                                #regularizer=self.reg,
+        #                                #constraint=self.constraint,
+        #                                trainable=True,
+        #                                name='deconv_weights',
+        #                                dtype=tf.float32) 
+        #                 for i in range(self.n_channels)]
+        
+
+        # self.b = [self.add_weight(shape=([1]),
+        #                          initializer=Constant(bias_const),
+        #                          regularizer=None,
+        #                          trainable=bias_traiable,
+        #                          name='bias',
+        #                          dtype=tf.float32)
+        #           for i in range(self.n_channels)]
+        
+        print("Built: {} input: {}".format(self.scope, input_shape))
+
+    #@tf.function
+    def call(self, x, training=None):
+        """ 
+        """
+        while True:
+             with tf.name_scope(self.scope):
+                 try:
+                    split_tensors = tf.split(x, self.n_channels, axis=-1)
+                    print("split:", split_tensors[0].shape)
+                    # Process each channel separately with its own Conv2DTranspose
+                    transposed_tensors = [self.deconv_units[i](split_tensors[i]) for i in range(self.n_channels)]
+                    
+                    # Concatenate all channels back together
+                    concatenated = tf.concat(transposed_tensors, axis=-1)
+                    print("concatenated:", concatenated.shape)
+                 except(AttributeError):
+                    input_shape = x.shape
+                    self.build(input_shape)
+        # while True:
+        #     with tf.name_scope(self.scope):
+        #         try:
+        #             # Split the input tensor into individual channels
+        #             split_tensors = tf.split(x, self.n_channels, axis=-1)
+        #             print("split:", split_tensors[0].shape)
+        #             transposed_tensors = []
+        #             for i in range(self.n_channels):
+        #                 # Each channel gets its own transpose convolution
+        #                 transposed = tf.nn.conv2d_transpose(split_tensors[i], 
+        #                                 filters=self.filters[i], 
+        #                                 output_shape=[self.input_shape[0], self.target_shape[1:3], 1], 
+        #                                 strides=self.strides,
+        #                                 padding=[[0, 0], [0, 0],
+        #                                          [self.n_pads, 0], [0, 0]]) + self.b[i]
+        #                 if i == 0:
+        #                     print("1 transposed:", transposed.shape)
+        #                 transposed_tensors.append(transposed)
+                    
+        #             # Concatenate all channels back together
+        #             concatenated = tf.concat(transposed_tensors, axis=-1)
+        #             print("concatenated:", concatenated.shape)
+        #             # conv = tf.nn.depthwise_conv2d(x,
+        #             #                               self.filters,
+        #             #                               padding=self.padding,
+        #             #                               strides=[1, 1, 1, 1],
+        #             #                               data_format='NHWC')
+        #             # conv = self.nonlin(conv + self.b)
+
+        #             #print(self.scope, ": output :", conv.shape)
+        #             #assert concatenated.shape == self.target_shape 
+        #             return concatenated
+        #         except(AttributeError):
+        #             input_shape = x.shape
+        #             self.build(input_shape)
 
 @saving.register_keras_serializable(package="mneflow")
 class VARConv(BaseLayer):

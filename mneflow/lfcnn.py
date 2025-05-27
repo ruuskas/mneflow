@@ -518,21 +518,13 @@ class LFCNN(BaseModel):
         w - [k,...,j]
         Sx - [k,...,mj]
         """
-<<<<<<< HEAD
-
-        x_shape = list(activations['tconv'].shape)
-        y_shape = list(y.shape)
-
-        ddof = activations['tconv'].shape[0] - 1
-        X = np.reshape(activations['tconv'], [activations['tconv'].shape[0], -1])
-=======
 
         x_shape = list(activations['pooled'].shape)
         y_shape = list(y.shape)
 
         ddof = activations['pooled'].shape[0] - 1
         X = np.reshape(activations['pooled'], [activations['pooled'].shape[0], -1])
->>>>>>> 1598a305f651ca119f416804419f240c7db5008e
+
         y = np.reshape(y, [y.shape[0], -1])
 
         w = np.reshape(weights['out_weights'], [-1, weights['out_weights'].shape[-1]])
@@ -811,9 +803,7 @@ class LFCNN(BaseModel):
         ##True evoked
         if self.dataset.h_params['target_type'] == 'float':
             self.true_evoked_data = X.numpy().mean(0)
-<<<<<<< HEAD
 
-=======
             ccm_dmx = activations['dmx'].numpy().mean(0)[..., np.newaxis]
 
             ccm_tconv = activations['tconv'].numpy().mean(0)[..., np.newaxis]
@@ -825,7 +815,6 @@ class LFCNN(BaseModel):
             cov_y_hat = np.cov(tf.transpose(activations['fc'], perm=[1, 0]))
             cov_y = np.cov(tf.transpose(y, perm=[1, 0]))
 
->>>>>>> 1598a305f651ca119f416804419f240c7db5008e
         elif self.dataset.h_params['target_type'] == 'int':
             y_int = np.argmax(y, 1)
             y_unique = np.unique(y_int)
@@ -924,11 +913,6 @@ class LFCNN(BaseModel):
                                                         self.specs['n_latent'],
                                                         self.y_shape[0],
                                                         n_folds])
-<<<<<<< HEAD
-
-            self.cv_patterns['ccms']['tconv'] = np.zeros([self.pooled.shape[2],
-                                                        self.specs['n_latent'],
-=======
 
             self.cv_patterns['ccms']['tconv'] = np.zeros([n_t,
                                                         self.specs['n_latent'],
@@ -937,7 +921,6 @@ class LFCNN(BaseModel):
 
             self.cv_patterns['ccms']['pooled'] = np.zeros([self.pooled.shape[2],
                                                         self.specs['n_latent'],
->>>>>>> 1598a305f651ca119f416804419f240c7db5008e
                                                         self.y_shape[0],
                                                         n_folds])
             self.cv_patterns['ccms']['fc'] = np.zeros([self.y_shape[0],
@@ -977,16 +960,11 @@ class LFCNN(BaseModel):
         self.cv_patterns['weight']['feature_relevance'][:, :, :, fold] = patterns_struct['weights']['out_weights']
         [self.cv_weights[k].append(patterns_struct['weights'][k])
          for k in patterns_struct['weights'].keys()]
-<<<<<<< HEAD
-
-        self.cv_patterns['ccms']['dmx'][:, :, :, fold] = patterns_struct['ccms']['dmx'] #n_t, n_latent, n_classes, n_folds
-        self.cv_patterns['ccms']['tconv'][:, :, :, fold] = patterns_struct['ccms']['tconv'] #n_pooled, n_latent, n_classes, n_folds
-=======
 
         self.cv_patterns['ccms']['dmx'][:, :, :, fold] = patterns_struct['ccms']['dmx'] #n_t, n_latent, n_classes, n_folds
         self.cv_patterns['ccms']['tconv'][:, :, :, fold] = patterns_struct['ccms']['tconv'] #n_t, n_latent, n_classes, n_folds
         self.cv_patterns['ccms']['pooled'][:, :, :, fold] = patterns_struct['ccms']['pooled'] #n_pooled, n_latent, n_classes, n_folds
->>>>>>> 1598a305f651ca119f416804419f240c7db5008e
+
         self.cv_patterns['ccms']['fc'][:, :, fold] = patterns_struct['ccms']['fc'] # n_logits, n_classes, n_folds
         self.cv_patterns['ccms']['cov_y_hat'][:, :, fold] = patterns_struct['ccms']['cov_y_hat'] # n_classes, n_classes, n_folds
         self.cv_patterns['ccms']['cov_y'][:, :, fold] = patterns_struct['ccms']['cov_y'] # n_classes, n_classes, n_folds
@@ -1008,13 +986,8 @@ class LFCNN(BaseModel):
                             nperseg=nfft)
             if len(fr[:-1]) < nfft:
                 nfft = len(fr[:-1])
-<<<<<<< HEAD
-            psds.append(psd[:, :-1].mean(0))
-
-=======
             psds.append(psd[:, 1:].mean(0))
 
->>>>>>> 1598a305f651ca119f416804419f240c7db5008e
 
         spectra = {}
         spectra['psds'] = np.array(psds).T
@@ -1113,13 +1086,10 @@ class LFCNN(BaseModel):
 
             elif self.dataset.h_params['target_type'] == 'int':
                 rfocs = np.array([pearsonr(y_, f)[0] for f in flat_feats.T])
-<<<<<<< HEAD
-                corr_to_output.append(rfocs.reshape(activations['tconv'].shape[1:]))
 
-=======
                 corr_to_output.append(rfocs.reshape(activations['pooled'].shape[1:]))
 
->>>>>>> 1598a305f651ca119f416804419f240c7db5008e
+
         corr_to_output = np.concatenate(corr_to_output, 0).transpose([1, 2, 0])
         #print(corr_to_output.shape)
         if np.any(np.isnan(corr_to_output)):

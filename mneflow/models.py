@@ -174,7 +174,7 @@ class BaseModel():
         elif not loss:
             loss_name = 'Cat_CE'
         else:
-            loss_name = params['loss'].name
+            loss_name = params['loss'].__name__
         _ = params.pop('loss')
         metrics = params.pop('metrics')
         metric_names = ':'.join([m.name for m in metrics])
@@ -428,6 +428,7 @@ class BaseModel():
                   Corr : {:.3f} +/- {:.3f}. 
                   R^2: {:.3f} +/- {:.3f}""".format(
                   rms['cc'], rms['cc_std'], rms['r2'], rms['r2_std']))
+            self.meta.update(results=rms)
         else:
             rms = None
 
@@ -1066,8 +1067,8 @@ class Deep4(BaseModel):
 
     def build_graph(self):
         self.scope = 'deep4'
-
-        inputs = tf.transpose(self.inputs,[0,3,2,1])
+        
+        inputs = tf.keras.ops.transpose(self.inputs,[0,3,2,1])
 
         tconv1 = DepthwiseConv2D(
                         kernel_size=(1, self.specs['filter_length']),
@@ -1075,10 +1076,10 @@ class Deep4(BaseModel):
                         strides=1,
                         padding=self.specs['padding'],
                         activation = tf.identity,
-                        kernel_initializer="he_uniform",
+                        depthwise_initializer="he_uniform",
                         bias_initializer=Constant(0.1),
                         data_format="channels_last",
-                        kernel_regularizer=k_reg.l2(self.specs['l2_lambda'])
+                        depthwise_regularizer=k_reg.l2(self.specs['l2_lambda'])
                         #kernel_constraint="maxnorm"
                         )
         tconv1_out = tconv1(inputs)

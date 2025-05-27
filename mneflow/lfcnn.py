@@ -99,7 +99,7 @@ class LFCNN(BaseModel):
         meta.model_specs['scope'] = self.scope
         #specs.setdefault('model_path',  self.dataset.h_params['save_path'])
         super(LFCNN, self).__init__(meta, dataset, specs_prefix)
-
+        #super().__init__(meta, dataset, specs_prefix)
 
 
     def build_graph(self):
@@ -134,10 +134,14 @@ class LFCNN(BaseModel):
 
         self.dropout = Dropout(self.specs['dropout'],
                           noise_shape=None)(self.pooled)
-
-        self.fin_fc = FullyConnected(size=self.out_dim, nonlin=tf.identity,
+        
+        # self.fin_fc0 = FullyConnected(size=self.specs['n_latent'], nonlin=tf.keras.activations.linear,
+        #                     specs=self.specs)
+        # fc0_out = self.fin_fc0(self.dropout)
+        
+        self.fin_fc = FullyConnected(size=self.out_dim, nonlin=tf.keras.activations.linear,
                             specs=self.specs)
-
+        #y_pred = self.fin_fc(fc0_out)
         y_pred = self.fin_fc(self.dropout)
 
         return y_pred
@@ -196,7 +200,7 @@ class LFCNN(BaseModel):
             
         
         print(padding)
-        print(n_pads)
+#        print(n_pads)
             
         
         
@@ -205,7 +209,7 @@ class LFCNN(BaseModel):
                           noise_shape=None)(enc_tconv_activations_r)
         #upool and apply transposed depthwise convolution
         print("pooled:", self.pooled.shape)
-        deconv_type = 2
+        deconv_type = 1
         if deconv_type == 1:
             if padding:
                 padding = (n_pads, 1)
@@ -290,7 +294,7 @@ class LFCNN(BaseModel):
         
         self.km_enc = tf.keras.Model(inputs=self.inputs, outputs=self.X_pred)
 
-        self.meta.train_params['enc_loss'] = [tf.keras.losses.CosineSimilarity(axis=[2, 3]),
+        self.meta.train_params['enc_loss'] = [tf.keras.losses.CosineSimilarity(axis=[3]),
                                               #tf.keras.losses.MSE
                                               ]
         #self.meta.train_params['enc_loss'] = [CosMSE]
@@ -520,11 +524,11 @@ class LFCNN(BaseModel):
         Sx - [k,...,mj]
         """
         
-        x_shape = list(activations['tconv'].shape)
+        x_shape = list(activations['pooled'].shape)
         y_shape = list(y.shape)
         
-        ddof = activations['tconv'].shape[0] - 1
-        X = np.reshape(activations['tconv'], [activations['tconv'].shape[0], -1])
+        ddof = activations['pooled'].shape[0] - 1
+        X = np.reshape(activations['pooled'], [activations['pooled'].shape[0], -1])
         y = np.reshape(y, [y.shape[0], -1])
 
         w = np.reshape(weights['out_weights'], [-1, weights['out_weights'].shape[-1]])
@@ -559,7 +563,7 @@ class LFCNN(BaseModel):
 
 
     def patterns_cov_xy_hat(self, X, y, activations, weights):
-        Sx_tconv = self.backprop_fc(activations['tconv'],
+        Sx_tconv = self.backprop_fc(activations['pooled'],
                                     activations['fc'],
                                     y,
                                     weights['out_weights'])
@@ -635,7 +639,7 @@ class LFCNN(BaseModel):
 
         #Least square singal estimate in tconv given wfc and fc_activations
         Sx_tconv = np.einsum('jk, ik ->ij', pinv_wfc, activations['fc'])
-        Sx_tconv = np.reshape(Sx_tconv, activations['tconv'].shape)
+        Sx_tconv = np.reshape(Sx_tconv, activations['pooled'].shape)
 
         #Reverse pooling and depthwise convolution for each class
         Sx_dmx = []
@@ -666,8 +670,8 @@ class LFCNN(BaseModel):
             fc_bp_out = (np.dot(activations['fc'].numpy()[class_ind, :],
                                weights['out_w_flat'].T)).mean(0)
 
-            fc_bp_out = fc_bp_out.reshape([activations['tconv'].shape[2],
-                                           activations['tconv'].shape[3]],
+            fc_bp_out = fc_bp_out.reshape([activations['pooled'].shape[2],
+                                           activations['pooled'].shape[3]],
                                            order='C')
             dc = dcov['class_conditional'][..., class_y]
             #fc_bp_out = np.maximum(fc_bp_out, 0)
@@ -764,16 +768,19 @@ class LFCNN(BaseModel):
         #get layer activations
         activations = {}
         # Extract activations
-        activations['dmx'] = self.tconv(self.dmx(X))
-        activations['tconv'] = self.pool(activations['dmx'])
-        activations['fc']  = self.fin_fc(activations['tconv'])
+        activations['dmx'] = self.dmx(X)
+        activations['tconv'] = self.tconv(activations['dmx'])
+        activations['pooled'] = self.pool(activations['tconv'])
+        activations['fc']  = self.fin_fc(activations['pooled'])
         if verbose:
             print(""""Activations: \n
                   DMX: {}
                   TCONV: {}
+                  POOLED: {}
                   FC_DENSE: {}""".format(
                   activations['dmx'].shape,
                   activations['tconv'].shape,
+                  activations['pooled'],
                   activations['fc'].shape))
 
         stop = time() - start
@@ -800,6 +807,16 @@ class LFCNN(BaseModel):
         ##True evoked
         if self.dataset.h_params['target_type'] == 'float':
             self.true_evoked_data = X.numpy().mean(0)
+            ccm_dmx = activations['dmx'].numpy().mean(0)[..., np.newaxis]
+                                
+            ccm_tconv = activations['tconv'].numpy().mean(0)[..., np.newaxis]
+            
+            ccm_pooled = activations['pooled'].numpy().mean(0)[..., np.newaxis]
+                     
+            ccm_fc = activations['fc'].numpy().mean(0)[..., np.newaxis]
+                     
+            cov_y_hat = np.cov(tf.transpose(activations['fc'], perm=[1, 0]))
+            cov_y = np.cov(tf.transpose(y, perm=[1, 0]))
             
         elif self.dataset.h_params['target_type'] == 'int':
             y_int = np.argmax(y, 1)
@@ -810,6 +827,8 @@ class LFCNN(BaseModel):
             ccm_dmx = np.stack([activations['dmx'].numpy()[y_int == i, ...].mean(0)
                                 for i in y_unique], -1)
             ccm_tconv = np.stack([activations['tconv'].numpy()[y_int == i, ...].mean(0)
+                                for i in y_unique], -1)
+            ccm_pooled = np.stack([activations['pooled'].numpy()[y_int == i, ...].mean(0)
                                 for i in y_unique], -1)
             ccm_fc = np.stack([activations['fc'].numpy()[y_int == i, ...].mean(0)
                                 for i in y_unique], -1)
@@ -824,7 +843,8 @@ class LFCNN(BaseModel):
         patterns_struct['spectra'] = spectra
         patterns_struct['dcov'] = dcov
         patterns_struct['ccms'] = {'dmx': ccm_dmx, # n_t, n_latent, n_classes
-                                   'tconv':ccm_tconv, #n_t_pooled, n_latent, n_classes
+                                   'tconv':ccm_tconv, #n_t, n_latent, n_classes
+                                   'pooled':ccm_pooled, #n_t_pooled, n_latent, n_classes
                                    'fc':ccm_fc, #n_y, n_y
                                    'cov_y_hat':cov_y_hat,
                                    'cov_y': cov_y,
@@ -897,7 +917,12 @@ class LFCNN(BaseModel):
                                                         self.y_shape[0],
                                                         n_folds])
             
-            self.cv_patterns['ccms']['tconv'] = np.zeros([self.pooled.shape[2],
+            self.cv_patterns['ccms']['tconv'] = np.zeros([n_t,
+                                                        self.specs['n_latent'], 
+                                                        self.y_shape[0],
+                                                        n_folds])
+            
+            self.cv_patterns['ccms']['pooled'] = np.zeros([self.pooled.shape[2],
                                                         self.specs['n_latent'], 
                                                         self.y_shape[0],
                                                         n_folds])
@@ -940,7 +965,8 @@ class LFCNN(BaseModel):
          for k in patterns_struct['weights'].keys()]
         
         self.cv_patterns['ccms']['dmx'][:, :, :, fold] = patterns_struct['ccms']['dmx'] #n_t, n_latent, n_classes, n_folds 
-        self.cv_patterns['ccms']['tconv'][:, :, :, fold] = patterns_struct['ccms']['tconv'] #n_pooled, n_latent, n_classes, n_folds 
+        self.cv_patterns['ccms']['tconv'][:, :, :, fold] = patterns_struct['ccms']['tconv'] #n_t, n_latent, n_classes, n_folds 
+        self.cv_patterns['ccms']['pooled'][:, :, :, fold] = patterns_struct['ccms']['pooled'] #n_pooled, n_latent, n_classes, n_folds 
         self.cv_patterns['ccms']['fc'][:, :, fold] = patterns_struct['ccms']['fc'] # n_logits, n_classes, n_folds
         self.cv_patterns['ccms']['cov_y_hat'][:, :, fold] = patterns_struct['ccms']['cov_y_hat'] # n_classes, n_classes, n_folds
         self.cv_patterns['ccms']['cov_y'][:, :, fold] = patterns_struct['ccms']['cov_y'] # n_classes, n_classes, n_folds
@@ -962,12 +988,12 @@ class LFCNN(BaseModel):
                             nperseg=nfft)
             if len(fr[:-1]) < nfft:
                 nfft = len(fr[:-1])
-            psds.append(psd[:, :-1].mean(0))
+            psds.append(psd[:, 1:].mean(0))
             
 
         spectra = {}
         spectra['psds'] = np.array(psds).T
-        spectra['freqs'] = fr[:-1]
+        spectra['freqs'] = fr[1:]
         spectra['nfft'] = nfft
         print(spectra['psds'].shape)
         return spectra
@@ -1051,18 +1077,18 @@ class LFCNN(BaseModel):
         """
         corr_to_output = []
         y_true = y_true.numpy()
-        flat_feats = activations['tconv'].numpy().reshape(y_true.shape[0], -1)
+        flat_feats = activations['pooled'].numpy().reshape(y_true.shape[0], -1)
 
         
         for y_ in y_true.T:
             if self.dataset.h_params['target_type'] in ['float', 'signal']:
                 rfocs = np.array([spearmanr(y_, f)[0] for f in flat_feats.T])
-                corr_to_output.append(rfocs.reshape(activations['tconv'].shape[1:]))
+                corr_to_output.append(rfocs.reshape(activations['pooled'].shape[1:]))
 
 
             elif self.dataset.h_params['target_type'] == 'int':
                 rfocs = np.array([pearsonr(y_, f)[0] for f in flat_feats.T])
-                corr_to_output.append(rfocs.reshape(activations['tconv'].shape[1:]))
+                corr_to_output.append(rfocs.reshape(activations['pooled'].shape[1:]))
                 
         corr_to_output = np.concatenate(corr_to_output, 0).transpose([1, 2, 0])
         #print(corr_to_output.shape)

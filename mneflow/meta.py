@@ -247,28 +247,30 @@ class MetaData():
         # get feature relevance
         if sorting == 'combined':
             F = (self.patterns['weight']['feature_relevance']
-                 * self.patterns['ccms']['tconv']
+                 * self.patterns['ccms']['pooled']
                  #* np.sign(self.patterns['output_corr']['feature_relevance'])
                  ) - self.weights['tconv_b'][np.newaxis, :, np.newaxis, :]
         else:
             F = self.patterns[sorting]['feature_relevance']
         
         #
+        n_t, n_components, n_y, n_folds = F.shape
+        #print(F.shape)
         
         Fd = []
-        if diff == True:
+        if diff == True and sorting != 'combined':
             
             y_cov = self.patterns['ccms']['cov_y']
             print(F.shape, y_cov.shape)
-            # for i in range(F.shape[3]):
-            #     Fd.append(np.dot(F[:, :, :, i], y_cov[:, :, i]))
-            # F = np.stack(Fd, axis=3)
-            for i in range(F.shape[2]):
-                F_other = np.delete(F, i, axis=2).mean(2)
-                Fd.append(F[:, :, i, :] - F_other)
-            F = np.stack(Fd, axis=2)
+            for i in range(F.shape[3]):
+                Fd.append(np.dot(F[:, :, :, i], y_cov[:, :, i]))
+            F = np.stack(Fd, axis=3)
+            # for i in range(F.shape[2]):
+            #     F_other = np.delete(F, i, axis=2).mean(2)
+            #     Fd.append(F[:, :, i, :] - F_other)
+            # F = np.stack(Fd, axis=2)
             # # #F = np.matmul()
-            #F = np.maximum(F, 0)
+            F = np.maximum(F, 0)
         
         names = ['Time Points', 'Components', 'Classes', 'Folds']
         
@@ -285,8 +287,14 @@ class MetaData():
             F = F.sum(1, keepdims=True)
             names.pop(names.index('Components'))
         
-      
         F = np.squeeze(F)
+        if n_y == 1:
+            #Put back the 'label' dimension
+            #print(F.shape)
+            F = F[:, np.newaxis, :]
+            
+        
+            
         print("Relevances: ", names, F.shape)
         return F, names
     
@@ -350,7 +358,7 @@ class MetaData():
             
             flt = self.weights['tconv'][x_ind, :, fold_ind]
             
-            #flt -= flt.mean()
+            flt -= flt.mean()
             w, h = freqz(flt, 1, worN=128, fs = self.data['fs'])
             freq_response = np.array(np.abs(h))
             freq_response = freq_response / np.sum(freq_response, 0, keepdims=True)
@@ -660,7 +668,8 @@ class MetaData():
         #     if diff:
         #         y_cov = self.patterns['ccms']['cov_y_hat']
         #     else:
-        y_cov = self.patterns['ccms']['cov_y_hat']
+        y_cov = self.patterns['ccms']['cov_y']
+        y_cov_hat = self.patterns['ccms']['cov_y_hat']
         
         class_topos = []
         if method in ['weight', 'compwise_loss', 'output_corr']:
@@ -678,6 +687,13 @@ class MetaData():
                     fold_topos.append(a)
                 class_topos.append(np.stack(fold_topos, 1))
             patterns = np.stack(class_topos, 1)
+            # if use_y_cov:
+                
+            #     patterns = np.stack([np.dot(patterns[:, :, f], 
+            #                                 np.dot(y_cov[:, :, f], 
+            #                                        np.linalg.inv(y_cov_hat[:, :, f])))
+            #                          for f in range(n_folds)], 2)
+            
             print('single:', patterns.shape)
         elif method == 'combined':
             
@@ -697,8 +713,9 @@ class MetaData():
                 class_topos = np.stack(class_topos, 2) # (n_ch, n_components, n_folds)
                 #print('combined, class topos', class_topos.shape)
                 if use_y_cov:
-                    w_out = np.dot(F[:, :, fold_ind], 
-                                   y_cov[:, :, fold_ind])
+                    yc = np.dot(y_cov[:, :, fold_ind], 
+                                np.linalg.inv(y_cov_hat[:, :, fold_ind]))
+                    w_out = np.dot(F[:, :, fold_ind], yc)
                     #print('F: ', F.shape)
                     #print('w_out: ', w_out.shape)
                     pattern = np.sum(class_topos * w_out[None, ...], axis=1)
@@ -738,8 +755,8 @@ class MetaData():
         
         #aggregate over folds
         n_folds = len(self.data['folds'][0])
-        
-        tconv_weights = np.stack([kernels[component_inds[:, i], :, i]
+        print("kernels: ", kernels.shape, 'inds: ', component_inds.shape)
+        tconv_weights = np.stack([kernels[:, component_inds[:, i], i]
                                   for i in range(n_folds)], -1) #n_classes, n_folds, filter_length
         cc_act = np.stack([np.stack([activations[:, component_inds[jj, i], jj, i]
                   for jj in range(n_y)], -1) for i in range(n_folds)], -1) # n_t_pooled, n_classes, n_folds
@@ -750,7 +767,7 @@ class MetaData():
         
         return cc_act, cc_waveforms, tconv_weights, component_inds
     
-    def get_spectra(self, n_fft=128, method='weight', diff=True):
+    def get_spectra(self, n_fft=128, method='weight', diff=False):
         
         """
         Computes the filter frequency response and reconstructed component power
@@ -855,9 +872,9 @@ class MetaData():
         
         n_freq, n_y, n_folds = h.shape
       
-        psds /= np.sum(psds, 0, keepdims=True)
-        h /= np.sum(h, 0, keepdims=True)
-        freq_responses /= np.sum(freq_responses**2, 0, keepdims=True)
+        # psds /= np.sum(psds, 0, keepdims=True)
+        # h /= np.sum(h, 0, keepdims=True)
+        # freq_responses /= np.sum(freq_responses, 0, keepdims=True)
         
         if freqs_lim:
             #ax[i].set_xlim(freqs_lim[0], freqs_lim[1])
@@ -871,6 +888,8 @@ class MetaData():
             
         f, ax = plt.subplots(1, n_y, sharey=True, figsize=(3*n_y, 4))
         #f.set_size()
+        if isinstance(ax, plt.matplotlib.axes._axes.Axes):
+            ax = [ax]
         for i in range(n_y):
             h_std = np.std(h[:, i], -1)
             inp_std = np.std(psds[:, i], -1)
@@ -955,45 +974,60 @@ class MetaData():
                          freqs_lim=(1, 70)):
         tcs = self.get_timecourse(method=method)
         cc_activations, cc_waveforms, tconv_weights, comp_inds = tcs
-        
+        print(cc_activations.shape, cc_waveforms.shape, tconv_weights.shape)
         
         if not class_subset:
-            class_subset = np.arange(0,  cc_activations.shape[2], 1)
+            class_subset = np.arange(0,  np.prod(self.data['y_shape']), 1)
         else:
             cc_waveforms = cc_waveforms[:, class_subset, :]
             cc_activations = cc_activations[ :, class_subset, :]
             
             
-            
-        cc_waveforms -= cc_waveforms.min(0, keepdims=True)
-        cc_waveforms /= cc_waveforms.max(0, keepdims=True)
-        cc_waveforms = cc_waveforms.mean(-1)
-        n_folds = len(self.data['folds'][0])
+
+        psds, h, freq_responses  = self.get_spectra(method=method)
         
-        cc_activations -= np.min(cc_activations, 0, keepdims=True)
-        cc_activations /= np.max(cc_activations, 0, keepdims=True)
+        psds /= np.sum(psds, 0, keepdims=True)
+        h /= np.sum(h, 0, keepdims=True)
+        freq_responses /= np.sum(freq_responses, 0, keepdims=True)
+        #cc_activations -= np.min(cc_activations, 0, keepdims=True)
+        #cc_activations /= np.max(cc_activations, 0, keepdims=True)
         
         n_classes = len(class_subset)
+        n_folds = len(self.data['folds'][0])    
+        
+        
+        
+        
         
         if not class_names:
             class_names = ["Class {}".format(i) for i in range(n_classes)]
+            
+        if average_over == 'folds':
+            cc_waveforms = cc_waveforms.mean(-1)
+            cc_activations = cc_activations.mean(-1)
+            h_std = h.std(-1)
+            psds_std = psds.std(-1)
+            psds = psds.mean(-1)
+            h = h.mean(-1)
+            #freq_responses = freq_responses.mean(-1)
+            n_folds = 1
+            n_rows = n_classes
+            
+        else:
+            n_rows = n_folds
+            h_std = np.zeros((1, n_rows))
+            psds_std = np.zeros((1, n_rows))
         
+        f, ax = plt.subplots(n_rows, 2)
+        ax = np.atleast_2d(ax)
         
-        f, ax = plt.subplots(n_classes, 2)
         f.set_size_inches([16, 16])
         n_t = self.data['n_t']
 
         tstep = 1/float(self.data['fs'])
         times = tmin + tstep*np.arange(n_t)
         
-        psds, h, freq_responses  = self.get_spectra(method=method)
-        #
-        
-        psds /= np.sum(psds, 0, keepdims=True)
-        h /= np.sum(h, 0, keepdims=True)
-        freq_responses /= np.sum(freq_responses, 0, keepdims=True)
-        
-        for i in range(n_classes):
+        for i in range(n_rows):
             
             # if apply_kernels:
             #     scaled_waveforms = np.array([np.convolve(kern, wf, 'same')
@@ -1011,20 +1045,20 @@ class MetaData():
             #                                       h_freq=bp_filter[1],
             #                                       method='iir',
             #                                       verbose=False)
-            ax[i, 0].plot(times, cc_waveforms[:, i], alpha=.75)
+            ax[i, 0].plot(times, cc_waveforms[..., i], alpha=.75, color='tab:blue')
+            ax[i, 0].plot(times, cc_activations[..., i], alpha=.75, color='tab:orange')
                  
             # ax[i, 0].pcolor(times[::self.model_specs['stride']], np.arange(0, 2), 
             #                 np.mean(cc_activations[:, i, :], -1, keepdims=True).T,
             #                 cmap='cividis')
             
             #ax[i, 1].stem(np.mean(tconv_weights[i, :],-1))
+            print(psds_std.shape)
             
-            
-            self.plot_temporal_pattern(psds[:, i].mean(-1), h[:, i].mean(-1), 
-                                       freq_responses[:, i].mean(-1),
+            self.plot_temporal_pattern(psds[..., i], h[..., i], freq_responses[..., i],
                                        ax = ax[i, 1], freqs_lim=freqs_lim,
-                                       h_std=h[:, i].std(-1),
-                                       inp_std=psds[:, i].std(-1))
+                                       h_std=h_std[:, i],
+                                       inp_std=psds_std[:, i])
 
         
         

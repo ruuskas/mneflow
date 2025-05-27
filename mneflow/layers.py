@@ -114,7 +114,7 @@ class FullyConnected(BaseLayer, tf.keras.layers.Layer):
                 if len(x.shape) > 2:  # flatten if input is not 2d array
                     x = tf.reshape(x, [-1, self.flatsize])
                 tmp = tf.matmul(x, self.w) + self.b
-                tmp = self.nonlin(tmp, name='out')
+                tmp = self.nonlin(tmp) #, name='out'
                 #print(self.scope, ": output :", tmp.shape)
                 return tmp
 

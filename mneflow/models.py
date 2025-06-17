@@ -72,6 +72,7 @@ class BaseModel():
         self.specs = meta.model_specs
         meta.model_specs['model_path'] = os.path.join(meta.data['path'],
                                                       'models')
+        self.current_fold = 0
 
         self.meta = meta
         self.model_path = meta.model_specs['model_path'] #os.path.join(meta.data['path'], 'models')
@@ -82,6 +83,7 @@ class BaseModel():
         if dataset:
             self.dataset = dataset
         elif not dataset and meta:
+            print(meta.data)
             self.dataset = Dataset(meta, **meta.data)
         else:
             print("Provide Dataset or Metadata file")
@@ -219,7 +221,7 @@ class BaseModel():
     def train(self, n_epochs=10, eval_step=None, min_delta=1e-6,
               early_stopping=3, mode='single_fold', prune_weights=False,
               collect_patterns=False, class_weights=None,
-              noisy_labels=False, noise_std=.1) :
+              noisy_labels=False, noise_std=.1, shapley_order=1, fold=0) :
 
         """
         Train a model
@@ -299,10 +301,15 @@ class BaseModel():
         elif mode == "loso":
             n_folds = len(self.dataset.h_params['train_paths'])
 
+        if collect_patterns and self.scope=='lfcnn':
+            self.init_pattern_struct(n_folds, freqs=None)
 
-        for jj in range(n_folds):
+        if fold:
+            self.current_fold = fold
 
-            print("Running {} fold: {}".format(mode, jj))
+        for jj in range(self.current_fold, n_folds):
+            self.current_fold = jj
+            print("Running {} fold: {}".format(mode, self.current_fold))
             if mode == "loso":
                 test_subj = self.dataset.h_params['train_paths'][jj]
                 train_subjs = self.dataset.h_params['train_paths'].copy()
@@ -318,7 +325,7 @@ class BaseModel():
                 train, val = self.dataset._build_dataset(self.dataset.h_params['train_paths'],
                                                    train_batch=self.dataset.training_batch,
                                                    test_batch=self.dataset.validation_batch,
-                                                   split=True, val_fold_ind=jj)
+                                                   split=True, val_fold_ind=self.current_fold)
             if not noisy_labels:
                 stop_early = tf.keras.callbacks.EarlyStopping(monitor='val_loss',
                                                               min_delta=self.meta.train_params['min_delta'],
@@ -391,8 +398,9 @@ class BaseModel():
                 rms = None
 
             if collect_patterns and self.scope == 'lfcnn':
-                self.collect_patterns(fold=jj, n_folds=n_folds,
-                                      n_comp=int(collect_patterns))
+                self.collect_patterns(fold=self.current_fold, n_folds=n_folds,
+                                      n_comp=int(collect_patterns),
+                                      shapley_order=shapley_order)
 
 
             if jj < n_folds - 1:

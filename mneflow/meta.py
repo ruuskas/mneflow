@@ -103,7 +103,7 @@ class MetaData():
                   Please specify meta.data['path'] and meta.data['data_id'']""")
         
         
-    def restore_model(self):
+    def restore_model(self, load_encoder=False):
         """Restored previously saved model from metadata."""
         from mneflow import models, lfcnn
         if self.model_specs['scope'] == 'lfcnn':
@@ -122,7 +122,7 @@ class MetaData():
                                self.data['data_id'] + '.h5'])
         model.km.load_weights(os.path.join(self.model_specs['model_path'],
                                            model.model_name))
-        if os.path.exists(os.path.join(self.model_specs['model_path'],
+        if load_encoder and os.path.exists(os.path.join(self.model_specs['model_path'],
                                            model.model_name[:-3] + 'encoder_.h5')):
           print("Loading encoder")
           model.build_encoder()

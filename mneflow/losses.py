@@ -7,12 +7,65 @@ Created on Mon May  5 16:36:53 2025
 import tensorflow as tf
 
 
+def Cos2MSE(y_true, y_pred, alpha=.5):
+     cosine = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[2])
+     mse = tf.keras.losses.mse(y_true, y_pred)
+     #mae = tf.keras.losses.mae(y_true, y_pred)
+     #cosine2 = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[2])
+     return cosine[:, :, :, tf.newaxis] + mse
+ 
+def Cos2_3(y_true, y_pred, alpha=.5):
+     cosine2 = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[2])
+     #mse = tf.keras.losses.mse(y_true, y_pred)
+     #mae = tf.keras.losses.mae(y_true, y_pred)
+     cosine3 = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[3])
+     return cosine2[:, :, :, tf.newaxis] + cosine3[:, :, tf.newaxis, :]
+
+def Cos2MAE(y_true, y_pred, alpha=.5):
+     cosine = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[2])
+     #mse = tf.keras.losses.mse(y_true, y_pred)
+     mae = tf.keras.losses.mae(y_true, y_pred)
+     #cosine2 = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[2])
+     return cosine[:, :, :, tf.newaxis] + mae
+ 
 def CosMSE(y_true, y_pred, alpha=.5):
      cosine = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[3])
      mse = tf.keras.losses.mse(y_true, y_pred)
-     #cosine2 = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[2, 3])
-     return cosine + alpha*mse #+ alpha*cosine2
-    
+     #mae = tf.keras.losses.mae(y_true, y_pred)
+     #cosine2 = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[2])
+     return cosine[:, :, tf.newaxis, :] + mse
+ 
+def Cos23MSE(y_true, y_pred, alpha=.1):
+     cosine = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[2, 3])
+     mse = tf.keras.losses.mse(y_true, y_pred)
+     #mae = tf.keras.losses.mae(y_true, y_pred)
+     #cosine2 = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[2])
+     return (1-alpha)*cosine[:, :, tf.newaxis, tf.newaxis] + alpha*mse
+
+def Cos3MAE(y_true, y_pred, alpha=.5):
+     cosine = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[3])
+     #mse = tf.keras.losses.mse(y_true, y_pred)
+     mae = tf.keras.losses.mae(y_true, y_pred)
+     #cosine2 = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[2])
+     return cosine[:, :, tf.newaxis, :] + mae   
+ 
+def MSAE(y_true, y_pred, alpha=.5):
+     #cosine = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[3])
+     mse = tf.keras.losses.mse(y_true, y_pred)
+     mae = tf.keras.losses.mae(y_true, y_pred)
+     #cosine2 = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[2])
+     return alpha*mse + (1-alpha)*mae
+ 
+def dMSAE(y_true, y_pred, alpha=.5):
+     #cosine = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[3])
+     mse = tf.keras.losses.mse(y_true, y_pred)
+     mae = tf.keras.losses.mae(y_true, y_pred)
+     #cosine2 = tf.keras.losses.cosine_similarity(y_true, y_pred, axis=[2])
+     return tf.maximum(mse, mae)
+ 
+# def top(y_true, y_pred, alpha=.5):
+#      res = y_pred - y_true
+#      return mse + mae
 
 def riemann_loss(y_true, y_pred):    
     """
@@ -35,7 +88,7 @@ def riemann_loss(y_true, y_pred):
     return distances
     
     
-    return 
+    #return 
 
 def tensor_covariance(tensor, axis=2):
     """

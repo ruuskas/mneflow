@@ -9,12 +9,53 @@ import pickle
 import numpy as np
 import tensorflow as tf
 import scipy.io as sio
-
+import csv
 import mne
 from matplotlib import pyplot as plt
 from .meta import MetaData
     
+class Logger(object):
+    """Logs all parameters manupulated in the current script and writes them 
+    into a csv"""
+    def __init__(self, name, path):
+        self.savepath = path + name + '.csv'
+        self.name = name
+        self.dict = {}
+        self.header = []
+        self.appending = os.path.exists(self.savepath)
+        
+    def write(self, param_dict):
+        self.appending = os.path.exists(self.savepath)
+        with open(self.savepath, 'a+', newline='') as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=param_dict.keys())
+            
+            if self.appending == False:
+                writer.writeheader()
+                self.appending = True
+                print("Writing to: ",  self.savepath)
+            writer.writerow(param_dict)    
+            
+def aligned_mean(topos):
+    n_topos = topos.shape[1]
+    topos_aligned = []
+    for i in range(n_topos):
+        t = topos[:, i, :]
+        cc = np.sign(np.corrcoef(t.T)[0, :])
+        if np.any(np.isnan(cc)):
+            print(cc)
+            cc[np.isnan(cc)] = 0.0
+            print(cc)
+            print('***')
+        
+        majority = np.sign(np.sum(cc))
+        if majority == 0:
+            majority = 1.
+        
+        aligned = np.dot(t, cc) / len(cc)
+        topos_aligned.append(majority * aligned)
     
+    topos_aligned = np.stack(topos_aligned, 1)
+    return topos_aligned
 
 def _onehot(y, n_classes=False):
     """

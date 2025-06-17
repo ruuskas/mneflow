@@ -64,7 +64,7 @@ class Dataset(object):
         self.h_params = meta.data
         if pick_channels or not 'channel_subset' in self.h_params.keys():
             self.h_params['channel_subset'] = pick_channels
-        if class_subset or not 'class_subset' in self.h_params.keys():
+        if np.any(class_subset) or not 'class_subset' in self.h_params.keys():
             self.h_params['class_subset'] = class_subset
         if decim or not 'decim' in self.h_params.keys():
             self.h_params['decim'] = decim
@@ -106,7 +106,7 @@ class Dataset(object):
         if self.h_params['channel_subset'] is not None:
             dataset = dataset.map(self._select_channels)
 
-        if self.h_params['class_subset'] is not None and self.h_params['target_type'] == 'int':
+        if np.any(self.h_params['class_subset']) is not None and self.h_params['target_type'] == 'int':
             dataset = dataset.filter(self._select_classes)
             dataset = dataset.map(self._select_class_subset)
 

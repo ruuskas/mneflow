@@ -1552,7 +1552,8 @@ class EnvelopNet(LFCNN):
     def __init__(self, meta, dataset=None, specs=None, specs_prefix=False):
         if specs is None:
             specs=dict()
-        super(EnvelopNet).__init__(meta, dataset, specs_prefix)
+        super().__init__(meta, dataset, specs_prefix)
+        self.scope = 'envelopnet_tpool'
         
 
     def build_graph(self):
@@ -1565,9 +1566,16 @@ class EnvelopNet(LFCNN):
             nonlin=self.specs['nonlin'],
             filter_length=self.specs['filter_length'],
             padding=self.specs['padding'],
-            specs=self.specs
-        )
+            specs=self.specs)
+        
         self.tconv_out = self.tconv(self.dmx_out)
+        self.tpool = TempPooling(pooling=self.specs['filter_length']//2,
+                                 pool_type=self.specs['pool_type'],
+                                 stride=self.specs['filter_length']//2,
+                                 padding='SAME'
+                                 )
+        
+        self.tpooled = self.tpool(self.tconv_out)
 
         self.envconv = LFTConv(
             size=self.specs['n_latent'],
@@ -1577,13 +1585,13 @@ class EnvelopNet(LFCNN):
             specs=self.specs
         )
 
-        self.envconv_out = self.envconv(self.tconv_out)
-        self.pool = TempPooling(pooling=self.specs['pooling'],
+        self.envconv_out = self.envconv(self.tpooled)
+        self.envpool = TempPooling(pooling=self.specs['pooling'],
                                   pool_type=self.specs['pool_type'],
                                   stride=self.specs['stride'],
                                   padding='SAME'
                                   )
-        self.pooled = self.pool(self.envconv_out)
+        self.pooled = self.envpool(self.envconv_out)
 
         self.dropout = Dropout(self.specs['dropout'], noise_shape=None)(self.pooled)
 

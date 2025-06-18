@@ -9,7 +9,7 @@ from . import losses
 from .utils import produce_tfrecords, load_meta
 from .data import Dataset
 from .models import VARCNN, Deep4, FBCSP_ShallowNet, EEGNet
-from .lfcnn import LFCNN
+from .lfcnn import LFCNN, EnvelopNet
 from .meta import MetaData
 mneflow.__version__ = '0.5.13dev'
 

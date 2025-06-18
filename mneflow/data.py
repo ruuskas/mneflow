@@ -106,7 +106,7 @@ class Dataset(object):
         if self.h_params['channel_subset'] is not None:
             dataset = dataset.map(self._select_channels)
 
-        if np.any(self.h_params['class_subset']) is not None and self.h_params['target_type'] == 'int':
+        if np.any(self.h_params['class_subset']) and self.h_params['target_type'] == 'int':
             dataset = dataset.filter(self._select_classes)
             dataset = dataset.map(self._select_class_subset)
 

@@ -83,7 +83,7 @@ class BaseModel():
         if dataset:
             self.dataset = dataset
         elif not dataset and meta:
-            print(meta.data)
+            #print(meta.data)
             self.dataset = Dataset(meta, **meta.data)
         else:
             print("Provide Dataset or Metadata file")

@@ -107,15 +107,10 @@ def riemann_loss(y_true, y_pred):
     )
 
     return distances
-<<<<<<< HEAD
 
 
     return
-=======
 
-
-    #return
->>>>>>> 3797f2ffcb5de8a6e3fe7d858b814068c83441ea
 
 def tensor_covariance(tensor, axis=2):
     """

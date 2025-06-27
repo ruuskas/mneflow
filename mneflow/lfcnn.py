@@ -22,7 +22,7 @@ from matplotlib import collections
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from time import time
 
-from mneflow.layers import LFTConv, DeMixing, FullyConnected, TempPooling, LFTConvTranspose
+from mneflow.layers import LFTConv, DeMixing, FullyConnected, TempPooling, LFTConvTranspose, VARConv
 from tensorflow.keras.layers import SeparableConv2D, Conv2D, DepthwiseConv2D
 from tensorflow.keras.layers import Flatten, Dropout, BatchNormalization
 from tensorflow.keras.initializers import Constant
@@ -1554,6 +1554,7 @@ class EnvelopNet(BaseModel):
         if specs:
             meta.update(model_specs=specs)
         #specs = meta.model_specs
+        self.scope = 'envelopnet_tpool'
         meta.model_specs.setdefault('filter_length', 7)
         meta.model_specs.setdefault('n_latent', 32)
         meta.model_specs.setdefault('pooling', 2)
@@ -1569,7 +1570,7 @@ class EnvelopNet(BaseModel):
         meta.model_specs['scope'] = self.scope
         super(EnvelopNet, self).__init__(meta, dataset, specs_prefix)
 
-        self.scope = 'envelopnet_tpool'
+
 
 
     def build_graph(self):
@@ -1577,7 +1578,7 @@ class EnvelopNet(BaseModel):
                             axis=3, specs=self.specs)
         self.dmx_out = self.dmx(self.inputs)
 
-        self.tconv = LFTConv(
+        self.tconv = VARConv(
             size=self.specs['n_latent'],
             nonlin=self.specs['nonlin'],
             filter_length=self.specs['filter_length'],
@@ -1593,7 +1594,7 @@ class EnvelopNet(BaseModel):
 
         self.tpooled = self.tpool(self.tconv_out)
 
-        self.envconv = LFTConv(
+        self.envconv = VARConv(
             size=self.specs['n_latent'],
             nonlin=self.specs['nonlin'],
             filter_length=self.specs['filter_length'],
@@ -1701,73 +1702,73 @@ class EnvelopNet(BaseModel):
         self.tc_out = np.squeeze(tc_out)
         self.corr_to_output = self.get_output_correlations(y)
 
-    def plot_patterns(
-        self, sensor_layout=None, sorting='l2', percentile=90,
-        scale=False, class_names=None, info=None
-    ):
-        order, ts = self._sorting(sorting)
-        self.uorder = order.ravel()
-        l_u = len(self.uorder)
-        if info:
-            info.__setstate__(dict(_unlocked=True))
-            info['sfreq'] = 1.
-            self.fake_evoked = evoked.EvokedArray(self.patterns, info, tmin=0)
-            if l_u > 1:
-                self.fake_evoked.data[:, :l_u] = self.fake_evoked.data[:, self.uorder]
-            elif l_u == 1:
-                self.fake_evoked.data[:, l_u] = self.fake_evoked.data[:, self.uorder[0]]
-            self.fake_evoked.crop(tmax=float(l_u))
-            if scale:
-                _std = self.fake_evoked.data[:, :l_u].std(0)
-                self.fake_evoked.data[:, :l_u] /= _std
-        elif sensor_layout:
-            lo = channels.read_layout(sensor_layout)
-            info = create_info(lo.names, 1., sensor_layout.split('-')[-1])
-            orig_xy = np.mean(lo.pos[:, :2], 0)
-            for i, ch in enumerate(lo.names):
-                if info['chs'][i]['ch_name'] == ch:
-                    info['chs'][i]['loc'][:2] = (lo.pos[i, :2] - orig_xy)/3.
-                    #info['chs'][i]['loc'][4:] = 0
-                else:
-                    print("Channel name mismatch. info: {} vs lo: {}".format(
-                        info['chs'][i]['ch_name'], ch))
+    # def plot_patterns(
+    #     self, sensor_layout=None, sorting='l2', percentile=90,
+    #     scale=False, class_names=None, info=None
+    # ):
+    #     order, ts = self._sorting(sorting)
+    #     self.uorder = order.ravel()
+    #     l_u = len(self.uorder)
+    #     if info:
+    #         info.__setstate__(dict(_unlocked=True))
+    #         info['sfreq'] = 1.
+    #         self.fake_evoked = evoked.EvokedArray(self.patterns, info, tmin=0)
+    #         if l_u > 1:
+    #             self.fake_evoked.data[:, :l_u] = self.fake_evoked.data[:, self.uorder]
+    #         elif l_u == 1:
+    #             self.fake_evoked.data[:, l_u] = self.fake_evoked.data[:, self.uorder[0]]
+    #         self.fake_evoked.crop(tmax=float(l_u))
+    #         if scale:
+    #             _std = self.fake_evoked.data[:, :l_u].std(0)
+    #             self.fake_evoked.data[:, :l_u] /= _std
+    #     elif sensor_layout:
+    #         lo = channels.read_layout(sensor_layout)
+    #         info = create_info(lo.names, 1., sensor_layout.split('-')[-1])
+    #         orig_xy = np.mean(lo.pos[:, :2], 0)
+    #         for i, ch in enumerate(lo.names):
+    #             if info['chs'][i]['ch_name'] == ch:
+    #                 info['chs'][i]['loc'][:2] = (lo.pos[i, :2] - orig_xy)/3.
+    #                 #info['chs'][i]['loc'][4:] = 0
+    #             else:
+    #                 print("Channel name mismatch. info: {} vs lo: {}".format(
+    #                     info['chs'][i]['ch_name'], ch))
 
-            self.fake_evoked = evoked.EvokedArray(self.patterns, info)
+    #         self.fake_evoked = evoked.EvokedArray(self.patterns, info)
 
-            if l_u > 1:
-                self.fake_evoked.data[:, :l_u] = self.fake_evoked.data[:, self.uorder]
-            elif l_u == 1:
-                self.fake_evoked.data[:, l_u] = self.fake_evoked.data[:, self.uorder[0]]
-            self.fake_evoked.crop(tmax=float(l_u))
-            if scale:
-                _std = self.fake_evoked.data[:, :l_u].std(0)
-                self.fake_evoked.data[:, :l_u] /= _std
-        else:
-            raise ValueError("Specify sensor layout")
+    #         if l_u > 1:
+    #             self.fake_evoked.data[:, :l_u] = self.fake_evoked.data[:, self.uorder]
+    #         elif l_u == 1:
+    #             self.fake_evoked.data[:, l_u] = self.fake_evoked.data[:, self.uorder[0]]
+    #         self.fake_evoked.crop(tmax=float(l_u))
+    #         if scale:
+    #             _std = self.fake_evoked.data[:, :l_u].std(0)
+    #             self.fake_evoked.data[:, :l_u] /= _std
+    #     else:
+    #         raise ValueError("Specify sensor layout")
 
 
-        if np.any(self.uorder):
-            nfilt = max(self.out_dim, 8)
-            nrows = max(1, l_u//nfilt)
-            ncols = min(nfilt, l_u)
-            f, ax = plt.subplots(nrows, ncols, sharey=True)
-            plt.tight_layout()
-            f.set_size_inches([16, 3])
-            ax = np.atleast_2d(ax)
+    #     if np.any(self.uorder):
+    #         nfilt = max(self.out_dim, 8)
+    #         nrows = max(1, l_u//nfilt)
+    #         ncols = min(nfilt, l_u)
+    #         f, ax = plt.subplots(nrows, ncols, sharey=True)
+    #         plt.tight_layout()
+    #         f.set_size_inches([16, 3])
+    #         ax = np.atleast_2d(ax)
 
-            for ii in range(nrows):
-                fake_times = np.arange(ii * ncols,  (ii + 1) * ncols, 1.)
-                vmax = np.percentile(self.fake_evoked.data[:, :l_u], 95)
-                self.fake_evoked.plot_topomap(
-                    times=fake_times,
-                    axes=ax[ii],
-                    colorbar=False,
-                    vmax=vmax,
-                    scalings=1,
-                    time_format="Branch #%g",
-                    title='Patterns ('+str(sorting)+')',
-                    outlines='head',
-                )
+    #         for ii in range(nrows):
+    #             fake_times = np.arange(ii * ncols,  (ii + 1) * ncols, 1.)
+    #             vmax = np.percentile(self.fake_evoked.data[:, :l_u], 95)
+    #             self.fake_evoked.plot_topomap(
+    #                 times=fake_times,
+    #                 axes=ax[ii],
+    #                 colorbar=False,
+    #                 vmax=vmax,
+    #                 scalings=1,
+    #                 time_format="Branch #%g",
+    #                 title='Patterns ('+str(sorting)+')',
+    #                 outlines='head',
+    #             )
 
     def branchwise_loss(self, X, y):
         model_weights_original = self.km.get_weights().copy()
@@ -1792,6 +1793,86 @@ class EnvelopNet(BaseModel):
             losses.append(self.km.evaluate(X, y, verbose=0)[0])
         self.km.set_weights(model_weights_original)
         self.branch_relevance_loss = base_loss - np.array(losses)
+
+
+class SourceNet(BaseModel):
+    """
+
+    """
+    def __init__(self, meta, dataset=None, specs=None, specs_prefix=False):
+        self.nfft = 128
+        if specs:
+            meta.update(model_specs=specs)
+        #specs = meta.model_specs
+        self.scope = 'sourcenet'
+        meta.model_specs.setdefault('filter_length', 7)
+        meta.model_specs.setdefault('n_latent', 32)
+        meta.model_specs.setdefault('pooling', 2)
+        meta.model_specs.setdefault('stride', 2)
+        meta.model_specs.setdefault('padding', 'SAME')
+        meta.model_specs.setdefault('pool_type', 'max')
+        meta.model_specs.setdefault('nonlin', tf.nn.relu)
+        meta.model_specs.setdefault('l1_lambda', 3e-4)
+        meta.model_specs.setdefault('l2_lambda', 0.)
+        meta.model_specs.setdefault('l1_scope', ['fc', 'demix', 'lf_conv'])
+        meta.model_specs.setdefault('l2_scope', [])
+        meta.model_specs.setdefault('unitnorm_scope', [])
+        meta.model_specs['scope'] = self.scope
+        super(SourceNet, self).__init__(meta, dataset, specs_prefix)
+
+
+
+
+    def build_graph(self):
+
+
+        self.tconv = LFTConv(
+            size=self.specs['n_latent'],
+            nonlin=self.specs['nonlin'],
+            filter_length=self.specs['filter_length'],
+            padding=self.specs['padding'],
+            specs=self.specs)
+
+        self.tconv_out = self.tconv(self.inputs)
+
+
+        self.dmx = DeMixing(size=self.specs['n_latent'], nonlin=tf.identity,
+                            axis=3, specs=self.specs)
+        self.dmx_out = self.dmx(self.tconv_out)
+
+        self.tpool = TempPooling(pooling=self.specs['filter_length']//2,
+                                  pool_type=self.specs['pool_type'],
+                                  stride=self.specs['filter_length']//2,
+                                  padding='SAME'
+                                  )
+
+        self.tpooled = self.tpool(self.dmx_out)
+
+        self.envconv = LFTConv(
+            size=self.specs['n_latent'],
+            nonlin=self.specs['nonlin'],
+            filter_length=self.specs['filter_length'],
+            padding=self.specs['padding'],
+            specs=self.specs
+        )
+
+        self.envconv_out = self.envconv(self.tpooled)
+
+        self.envpool = TempPooling(pooling=self.specs['pooling'],
+                                  pool_type=self.specs['pool_type'],
+                                  stride=self.specs['stride'],
+                                  padding='SAME'
+                                  )
+        self.pooled = self.envpool(self.envconv_out)
+
+        self.dropout = Dropout(self.specs['dropout'], noise_shape=None)(self.pooled)
+
+        self.fin_fc = FullyConnected(size=self.out_dim, nonlin=tf.identity,
+                            specs=self.specs)
+
+        self.y_pred = self.fin_fc(self.dropout)
+
+        return self.y_pred
 
     # def plot_branch(
     #     self,

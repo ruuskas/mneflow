@@ -13,9 +13,9 @@ import csv
 import mne
 from matplotlib import pyplot as plt
 from .meta import MetaData
-    
+
 class Logger(object):
-    """Logs all parameters manupulated in the current script and writes them 
+    """Logs all parameters manupulated in the current script and writes them
     into a csv"""
     def __init__(self, name, path):
         self.savepath = path + name + '.csv'
@@ -23,18 +23,18 @@ class Logger(object):
         self.dict = {}
         self.header = []
         self.appending = os.path.exists(self.savepath)
-        
+
     def write(self, param_dict):
         self.appending = os.path.exists(self.savepath)
         with open(self.savepath, 'a+', newline='') as csv_file:
             writer = csv.DictWriter(csv_file, fieldnames=param_dict.keys())
-            
+
             if self.appending == False:
                 writer.writeheader()
                 self.appending = True
                 print("Writing to: ",  self.savepath)
-            writer.writerow(param_dict)    
-            
+            writer.writerow(param_dict)
+
 def aligned_mean(topos):
     if topos.ndim == 2:
         topos = np.expand_dims(topos, 1)
@@ -49,14 +49,14 @@ def aligned_mean(topos):
             cc[np.isnan(cc)] = 0.0
             print(cc)
             print('***')
-        
+
         majority = np.sign(np.sum(cc))
         if majority == 0:
             majority = 1.
-        
+
         aligned = np.dot(t, cc) / len(cc)
         topos_aligned.append(majority * aligned)
-    
+
     topos_aligned = np.stack(topos_aligned, 1)
     return topos_aligned
 
@@ -111,8 +111,8 @@ def load_meta(path, data_id=''):
     return meta
 
 # def load_model(model_path):
-    
-#     return model 
+
+#     return model
 
 
 
@@ -347,9 +347,9 @@ def import_data(inp, array_keys={'X': 'X', 'y': 'y'}):
     return data, events
 
 
-def produce_tfrecords(inputs, 
-                      path, 
-                      data_id, 
+def produce_tfrecords(inputs,
+                      path,
+                      data_id,
                       fs=1.,
                       input_type='trials',
                       target_type='int',
@@ -410,8 +410,8 @@ def produce_tfrecords(inputs,
 
         'int' - for classification,
         'float' - for regression problems.
-        'signal' - regression or classification a continuous (possbily multichannel) 
-        data. Requires "transform_targets" function to be applied to target 
+        'signal' - regression or classification a continuous (possbily multichannel)
+        data. Requires "transform_targets" function to be applied to target
         variables
 
     n_folds : int, optional
@@ -419,10 +419,10 @@ def produce_tfrecords(inputs,
         One fold of the n_folds is used as a validation set.
         If test_set == 'holdout' generates one extra fold
         used as test set. Defaults to 5
-    
+
     predefined_split : list or lists, optional
-        Pre-defined split of the dataset into training/validation folds. 
-        Should match exactly the size and type of MetaData.data['folds'], 
+        Pre-defined split of the dataset into training/validation folds.
+        Should match exactly the size and type of MetaData.data['folds'],
         size of the dataset, and contain n_folds.
 
     test_set : str {'holdout', 'loso', None}, optional
@@ -496,10 +496,10 @@ def produce_tfrecords(inputs,
     --------
     >>> meta = mneflow.produce_tfrecords(input_paths, \**import_opts)
     """
-    
+
     assert input_type in ['trials', 'seq', 'continuous', 'fconn'], "Unknown input type: {}".format(input_type)
     assert target_type in ['int', 'float', 'signal'], "Unknown target type."
-    
+
     if not os.path.exists(path):
         os.mkdir(path)
     data_path = os.path.join(path, 'tfrecords')
@@ -514,7 +514,7 @@ def produce_tfrecords(inputs,
         folds = []
         train_paths=[]
         test_paths=[]
-        
+
         jj = 0
         if test_set == 'holdout':
             n_folds += 1
@@ -529,7 +529,7 @@ def produce_tfrecords(inputs,
             return
         for inp in inputs:
             #print("inp:", inp, len(inp), type(inp))
-            
+
 
             data, events = import_data(inp, array_keys=array_keys)
 
@@ -582,8 +582,8 @@ def produce_tfrecords(inputs,
                         segment=segment, aug_stride=aug_stride,
                         seq_length=seq_length,
                         segment_y=segment_y)
-                
-                
+
+
 
                 Y = preprocess_targets(Y, scale_y=scale_y,
                                        transform_targets=transform_targets)
@@ -611,12 +611,12 @@ def produce_tfrecords(inputs,
                     test_size += x_test.shape[0]
                 else:
                     test_fold = None
-                
+
                 if predefined_split:
                     assert len(predefined_split[jj]) == len(fold_split), "Number of folds in predefined_split {} does not match n_folds {}!".format(len(predefined_split), len(fold_split))
                     assert np.all([len(fpd) == len(fa) for fpd, fa in zip(predefined_split[jj], fold_split)]), "Number of samples in predefined folds does not match the original split!"
                     print("Using Predefined Train/Validation Split....")
-                    fold_split = predefined_split[jj]                  
+                    fold_split = predefined_split[jj]
                     #TODO: remove?
 #                if input_type == 'fconn':
 #                    _n, meta['n_ch'], meta['n_t'], meta['n_freq'] = X.shape
@@ -645,14 +645,14 @@ def produce_tfrecords(inputs,
                 train_filename = os.path.join(data_path, trname)
                 train_paths.append(train_filename)
 
-                _write_tfrecords(X, Y, n, train_filename, 
+                _write_tfrecords(X, Y, n, train_filename,
                                  target_type=target_type)
 
                 if test_set == 'loso':
                     test_size = len(Y)
                     tfrname = ''.join([data_id, '_test_', str(jj), '.tfrecord'])
                     test_filename = os.path.join(data_path, tfrname)
-                                        
+
                     _write_tfrecords(X, Y, n, test_filename,
                                      target_type=target_type)
 
@@ -661,17 +661,17 @@ def produce_tfrecords(inputs,
                     tfrname = ''.join([data_id, '_test_', str(jj), '.tfrecord'])
                     test_filename = os.path.join(data_path, tfrname)
                     n_test = np.arange(len(test_fold))
-                    
+
                     _write_tfrecords(x_test, y_test, n_test, test_filename,
                                      target_type=target_type)
                     test_paths.append(test_filename)
                 jj += 1
                 #create and save metadata file
-                
+
             meta_data = dict(path=path,
-                             data_path=data_path, 
+                             data_path=data_path,
                              target_type=target_type,
-                             input_type=input_type, 
+                             input_type=input_type,
                              data_id=data_id,
                              test_set=test_set,
                              train_paths=train_paths,
@@ -692,17 +692,17 @@ def produce_tfrecords(inputs,
                              fs=fs,
                              train_batch=train_batch,
                              test_batch=test_batch)
-            
+
             meta_preprocessing = dict(scale=scale,
                                       scale_interval=scale_interval,
                                       crop_baseline=crop_baseline,
                                       segment=segment, aug_stride=aug_stride,
                                       seq_length=seq_length,
                                       segment_y=segment_y)
-            
+
             meta = MetaData()
-            meta.update(data=meta_data, preprocessing=meta_preprocessing)       
-            
+            meta.update(data=meta_data, preprocessing=meta_preprocessing)
+
             with open(path+data_id+'_meta.pkl', 'wb') as f:
                 pickle.dump(meta, f)
 
@@ -745,7 +745,7 @@ def produce_labels(y, return_stats=True):
                                            return_counts=True)
     total_counts = np.sum(counts)
     counts = counts/float(total_counts)
-    print(np.squeeze(inv)[inds].shape, np.squeeze(inv[inds]).shape)
+    #print(np.squeeze(inv)[inds].shape, np.squeeze(inv[inds]).shape)
     class_proportions = {str(clss): cnt for clss, cnt in zip(np.squeeze(inv)[inds], counts)}
     orig_classes = {str(new): old for new, old in zip(np.squeeze(inv)[inds], classes)}
     if return_stats:
@@ -775,7 +775,7 @@ def _combine_labels(labels, new_mapping):
     """
     assert isinstance(new_mapping, dict), "Invalid label mapping."
     # Find all possible label values
-    print(labels)
+    #print(labels)
     tmp = []
     for k, j in new_mapping.items():
         tmp.append(k)
@@ -896,7 +896,7 @@ def cont_split_indices(data, events, n_folds=5, segments_per_fold=10):
     raw_len = data.shape[-1]
     # Define minimal duration of a single, non-overlapping data segment
     ind_samples = int(raw_len//(segments_per_fold*n_folds))
-    
+
     segments = np.arange(0, raw_len - ind_samples + 1, ind_samples)
     data = np.concatenate([data[:, :, s: s + ind_samples] for s in segments])
     # Split continous data into non-overlapping segments
@@ -955,7 +955,7 @@ def preprocess(data, events, sample_counter,
                seq_length=None,
                segment_y=False):
     """
-    Preprocess input data. 
+    Preprocess input data.
     Applies scaling, segmenting/augmentation,
     and defines the split into training/validation folds.
 

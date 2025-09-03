@@ -102,7 +102,7 @@ class LFCNN(BaseModel):
         #specs.setdefault('model_path',  self.dataset.h_params['save_path'])
         super(LFCNN, self).__init__(meta, dataset, specs_prefix)
         #super().__init__(meta)
-
+        print('Init end')
 
     def build_graph(self):
         """Build computational graph using defined placeholder `self.X`
@@ -145,22 +145,22 @@ class LFCNN(BaseModel):
                             specs=self.specs)
         #y_pred = self.fin_fc(fc0_out)
         self.y_pred = self.fin_fc(self.dropout)
-
+        print('Init end')
         return self.y_pred
 
     def build_encoder(self, encoder_specs
-                      #inputs='y_pred', conv='full', 
+                      #inputs='y_pred', conv='full',
                       #reconstruction_loss=tf.keras.losses.MAE
                       ):
         """Build computational graph for an interpretable Generator
-        
+
         Parameters:
         ----------
         inputs : str [y_pred, activations]
-        
-        
+
+
         conv : str ['full', 'depthwise']
-            
+
 
         Returns
         --------
@@ -169,17 +169,17 @@ class LFCNN(BaseModel):
             Prediction of the target variable.
         """
         self.specs['dropout'] = 0.05
-        
+
         #encoder_specs = self.specs.copy()
         #encoder_specs['l1_lambda'] = 1e-3
         #encoder_specs['l1_scope'] = ['dede', 'dmx']
         #encoder_specs['l2_lambda'] = 3e-6
         #encoder_specs['l2_scope'] = ['tconv']
         self.encoder_specs = encoder_specs
-        
+
         print("Freezing the decoder")
 
-        self.enc_fc = FullyConnected(scope='def', size=self.fin_fc.w.shape[0], 
+        self.enc_fc = FullyConnected(scope='def', size=self.fin_fc.w.shape[0],
                                      nonlin=self.encoder_specs['nonlin'],
                                      specs=self.encoder_specs)
         #Get single fully-connected layer
@@ -187,13 +187,13 @@ class LFCNN(BaseModel):
             enc_tconv_activations =  self.enc_fc(self.y_pred)
         elif self.encoder_specs['inputs'] == 'activations':
             enc_tconv_activations =  self.enc_fc(self.pooled)
-        
+
         print("enc_tconv_activations: ", enc_tconv_activations.shape, self.pooled.shape)
         self.enc_tconv_activations_r = tf.keras.layers.Reshape(self.pooled.shape[1:])
-        
+
         enc_tconv_activations_r =  self.enc_tconv_activations_r(enc_tconv_activations)
         default_output_t = enc_tconv_activations_r.shape[2] * self.encoder_specs['stride']
-        
+
         #Conv2DTranspose with restoring original shape
         diff_padding = default_output_t - self.dataset.h_params['n_t']
         if self.dataset.h_params['n_t']%self.specs['stride'] == 0:
@@ -208,16 +208,16 @@ class LFCNN(BaseModel):
             n_pads = max(0, self.specs['stride'] - diff_padding)
             padding = (n_pads, 1)
             print(padding)
-       
+
         print("before upsampling: ", enc_tconv_activations_r.shape)
         enc_dropout = Dropout(self.specs['dropout'],
                           noise_shape=None)(enc_tconv_activations_r)
-        
-        
-        
+
+
+
         if self.encoder_specs['conv'] == 'depthwise':
-            enc_dropout_split = tf.keras.ops.split(enc_dropout, 
-                                                   indices_or_sections=self.encoder_specs['n_latent'], 
+            enc_dropout_split = tf.keras.ops.split(enc_dropout,
+                                                   indices_or_sections=self.encoder_specs['n_latent'],
                                                    axis=-1)
             self.enc_tconv_trans = [tf.keras.layers.Conv1DTranspose(
                                         filters=1,
@@ -241,12 +241,12 @@ class LFCNN(BaseModel):
             print('Build {} separate ConvTranspose layers each returning {}'.format(len(self.enc_tconv_trans),
                                                                                     enc_tconv_tans_out[0].shape))
             enc_deconv = tf.keras.ops.expand_dims(tf.keras.ops.concatenate(
-                                                  enc_tconv_tans_out, 
+                                                  enc_tconv_tans_out,
                                                   axis=-1), 1)
         else:
             self.enc_tconv_trans=tf.keras.layers.Conv2DTranspose(
                                     filters=1,
-                                    kernel_size=(self.encoder_specs['filter_length'], 
+                                    kernel_size=(self.encoder_specs['filter_length'],
                                                  self.encoder_specs['n_latent']),
                                     strides=(self.encoder_specs['stride'], 1),
                                     padding='same',
@@ -263,21 +263,21 @@ class LFCNN(BaseModel):
                                     #kernel_constraint=tf.keras.constraints.UnitNorm(axis=[0, 1]),
                                     bias_constraint=None,
                                     )
-        
+
             enc_deconv = self.enc_tconv_trans(enc_dropout)
 
         print("Enc_deconv:", enc_deconv.shape)
         print("TCONV OUT:", self.tconv_out.shape)
         assert enc_deconv.shape == self.tconv_out.shape
 
-        self.de_dmx = DeMixing(scope='dede', 
-                               size=self.dataset.h_params['n_ch'], 
+        self.de_dmx = DeMixing(scope='dede',
+                               size=self.dataset.h_params['n_ch'],
                                nonlin=self.encoder_specs['nonlin'],
-                               axis=3, 
+                               axis=3,
                                specs=self.encoder_specs)
 
         self.X_pred = self.de_dmx(enc_deconv)
-        print(self.X_pred.shape)
+        #print(self.X_pred.shape)
 
         self.km_enc = tf.keras.Model(inputs=self.inputs, outputs=self.X_pred)
 
@@ -292,63 +292,63 @@ class LFCNN(BaseModel):
                         #loss_weights=[alpha, 1.-alpha]
                         )
 
-    
+
     def enc_reconstruct(self, method='weight'):
         """
         Compute and return mean reconstructed input for each class.
         method : str
             ['full', 'weight', 'compwise_loss', 'output_corr', 'combined', 'shap']
         """
-        
-        # F, names = self.meta.get_feature_relevances(sorting=method, 
+
+        # F, names = self.meta.get_feature_relevances(sorting=method,
         #                                        integrate=[],
         #                                        diff=True)
-        
+
         # print("F:", F.shape)
         # n_t, n_components, n_y, n_folds = F.shape
-        
+
         #W = self.weights['dmx'] #(n_ch, n_components, n_folds)
-        
+
         patterns_struct = self.compute_patterns(shapley_order=0, methods=['weight'])
-        
-        
+
+
         #Get spatial encoder weights
         # w_enc = tf.transpose(self.de_dmx.weights[0]) #(n_ch, n_components)
         # #Get temoporal encoder weights
-        # 
+        #
         #     a_enc = tf.keras.ops.concatenate([x.weights[0] for x in self.enc_tconv_trans],
         #                                      axis=1)# (n_taps, n_components, n_folds)
-        
-        #Get mean activations of enc_fc for each class. 
+
+        #Get mean activations of enc_fc for each class.
         if self.encoder_specs['inputs'] == 'activations':
             ccms = patterns_struct['ccms']['pooled'] # (n_t, n_comp, n_classes, n_folds)
-            f_enc = self.enc_tconv_activations_r(self.enc_fc(ccms.transpose([3, 1, 2, 0]))) 
+            f_enc = self.enc_tconv_activations_r(self.enc_fc(ccms.transpose([3, 1, 2, 0])))
         elif self.encoder_specs['inputs'] == 'y_pred':
             ccms = patterns_struct['ccms']['fc'] # (n_t, n_comp, n_classes, n_folds)
-            f_enc = self.enc_tconv_activations_r(self.enc_fc(ccms.transpose())) 
+            f_enc = self.enc_tconv_activations_r(self.enc_fc(ccms.transpose()))
         #From now on class-means are treated as "samples"
-        
-        
+
+
         print(f_enc.shape) # n_classes, 1, n_t, n_components
         if self.encoder_specs['conv'] == 'depthwise':
-            f_enc_split = tf.keras.ops.split(f_enc, 
-                                               indices_or_sections=self.specs['n_latent'], 
+            f_enc_split = tf.keras.ops.split(f_enc,
+                                               indices_or_sections=self.specs['n_latent'],
                                                axis=-1)
-        
+
             comp_ts = [tconv_trans(fes[:, 0, :, :]) for tconv_trans, fes  in zip(self.enc_tconv_trans,
                                                                  f_enc_split)]
-        
+
             enc_deconv = tf.keras.ops.expand_dims(tf.keras.ops.concatenate(
-                                              comp_ts, 
+                                              comp_ts,
                                               axis=-1), 1)
         elif self.encoder_specs['conv'] == 'full':
             enc_deconv = self.enc_tconv_trans(f_enc)
-        
+
         reconstructed = self.de_dmx(enc_deconv)
         print("Returning rconstructed input for {} variables".format(reconstructed.shape[0]))
         return reconstructed
-        
-        
+
+
     def compute_enc_patterns(self, inputs=None):
         """
 
@@ -363,8 +363,8 @@ class LFCNN(BaseModel):
 
         return np.squeeze(patterns) #, unpooled_wfs
 
-    def train_encoder(self, n_epochs, eval_step=None, min_delta=1e-6, 
-                      mode='single_fold', early_stopping=3, 
+    def train_encoder(self, n_epochs, eval_step=None, min_delta=1e-6,
+                      mode='single_fold', early_stopping=3,
                       collect_patterns=False):
         self.km.trainable = False
         if mode == 'single_fold':
@@ -376,16 +376,16 @@ class LFCNN(BaseModel):
             print("Running cross-validation with {} folds".format(n_folds))
         elif mode == "loso":
             print("LOSO Encoder training is not implementerd")
-        
+
         self.cv_enc_losses = []
         self.cv_enc_metrics = []
-        
+
         for jj in range(n_folds):
             train, val = self.dataset._build_dataset(self.dataset.h_params['train_paths'],
                                                train_batch=self.dataset.training_batch,
                                                test_batch=self.dataset.validation_batch,
                                                split=True, val_fold_ind=fold)
-        
+
 
             dataset_train = train.map(lambda x, y : (x, x))
             dataset_val = val.map(lambda x, y : (x, x))
@@ -406,7 +406,7 @@ class LFCNN(BaseModel):
             self.cv_enc_losses.append(losses)
             self.cv_enc_metrics.append(metrics)
             fold += 1
-            
+
 
         print("""{} with {} fold(s) completed. \n
               Validation Performance:
@@ -415,7 +415,7 @@ class LFCNN(BaseModel):
               .format("Encoder training with", n_folds,
                       np.mean(self.cv_enc_losses), np.mean(self.cv_enc_metrics)))
         self.km.trainable = True
-            
+
 
     def get_config(self):
             # Do not call super.get_config!
@@ -633,7 +633,7 @@ class LFCNN(BaseModel):
         return topos
 
 
-    def compute_patterns(self, data_path=None, verbose=False, shapley_order=1, 
+    def compute_patterns(self, data_path=None, verbose=False, shapley_order=1,
                          methods=['weight']):
         """Computes spatial patterns from filter weights.
         Required for visualization.
@@ -679,7 +679,7 @@ class LFCNN(BaseModel):
         -------
             AttributeError: If `data_path` is not specified.
         """
-        patterns_struct = {'weights' : {'dmx':[], 'tconv':[], 'fc':[], 
+        patterns_struct = {'weights' : {'dmx':[], 'tconv':[], 'fc':[],
                                         'tconv_freq_resposes':{}},
                            'ccms' : {'dmx':[], 'tconv':[], 'fc':[], 'input':[], 'dmx_psd':[]},
                            'dcov' : {'input_spatial':[], 'class_conditional':[],
@@ -814,22 +814,22 @@ class LFCNN(BaseModel):
         start = time()
         if 'compwise_loss' in methods and shapley_order > 0:
             _, shap = self.compute_componentwise_loss(X, y, order=shapley_order)
-            patterns_struct['compwise_loss'] = np.repeat(np.stack([b['o1_relevances'] for b in shap], 
-                                                                  axis=1)[np.newaxis, ...], 
+            patterns_struct['compwise_loss'] = np.repeat(np.stack([b['o1_relevances'] for b in shap],
+                                                                  axis=1)[np.newaxis, ...],
                                                          self.pooled.shape[2], axis=0) # n_t, n_comp, n_y
             if shapley_order > 1:
-                patterns_struct['shap_o2'] = np.repeat(np.stack([b['o2_relevances'] for b in shap], 
-                                                                      axis=1)[np.newaxis, ...], 
+                patterns_struct['shap_o2'] = np.repeat(np.stack([b['o2_relevances'] for b in shap],
+                                                                      axis=1)[np.newaxis, ...],
                                                              self.pooled.shape[2], axis=0) # n_t, n_comp, n_y
-                patterns_struct['ind_top_o2'] = np.stack([b['o2_inds'] for b in shap], 
-                                                                      axis=1) # 2, n_y    
+                patterns_struct['ind_top_o2'] = np.stack([b['o2_inds'] for b in shap],
+                                                                      axis=1) # 2, n_y
             if shapley_order > 2:
-                patterns_struct['shap_o3'] = np.repeat(np.stack([b['o3_relevances'] for b in shap], 
-                                                                      axis=1)[np.newaxis, ...], 
-                                                             self.pooled.shape[2], axis=0) # n_t, n_comp, n_y                
-                patterns_struct['ind_top_o3'] = np.stack([b['o3_inds'] for b in shap], 
+                patterns_struct['shap_o3'] = np.repeat(np.stack([b['o3_relevances'] for b in shap],
+                                                                      axis=1)[np.newaxis, ...],
+                                                             self.pooled.shape[2], axis=0) # n_t, n_comp, n_y
+                patterns_struct['ind_top_o3'] = np.stack([b['o3_inds'] for b in shap],
                                                                       axis=1) # 3, n_y
-            
+
         stop = time() - start
         print("Compwise Loss: {:.2f}s".format(stop))
         #correlation of fc activations to y
@@ -851,7 +851,7 @@ class LFCNN(BaseModel):
 
         patterns['wfc_mean']['spatial'] = self.patterns_wfc_mean(y, weights, activations, dcov)
         return patterns
-    
+
     def init_pattern_struct(self, n_folds, freqs, methods='all'):
         if methods == 'all':
             methods = ['weight', 'compwise_loss', 'weight_norm', 'output_corr',
@@ -861,9 +861,9 @@ class LFCNN(BaseModel):
         n_t_pooled = self.pooled.shape[2] #patterns_struct['weights']['out_weights'].shape[0]
         n_t = self.meta.data['n_t']
         #n_fft = len(patterns_struct['freqs'])
-        
+
         self.cv_patterns['freqs'] = freqs
-        
+
         self.cv_patterns['dcov']['input_spatial'] = np.zeros([n_ch, n_ch,
                                                               n_folds])
         self.cv_patterns['dcov']['class_conditional'] = np.zeros([n_ch, n_ch,
@@ -873,59 +873,59 @@ class LFCNN(BaseModel):
                                                     self.y_shape[0],
                                                     n_folds])
         self.cv_patterns['ccms']['dmx'] = np.zeros([n_t,
-                                                    self.specs['n_latent'], 
+                                                    self.specs['n_latent'],
                                                     self.y_shape[0],
                                                     n_folds])
-        
+
         self.cv_patterns['ccms']['tconv'] = np.zeros([n_t,
-                                                    self.specs['n_latent'], 
+                                                    self.specs['n_latent'],
                                                     self.y_shape[0],
                                                     n_folds])
-        
+
         self.cv_patterns['ccms']['pooled'] = np.zeros([self.pooled.shape[2],
-                                                    self.specs['n_latent'], 
+                                                    self.specs['n_latent'],
                                                     self.y_shape[0],
                                                     n_folds])
         self.cv_patterns['ccms']['fc'] = np.zeros([self.y_shape[0],
-                                                   self.y_shape[0], 
+                                                   self.y_shape[0],
                                                    n_folds])
         self.cv_patterns['ccms']['cov_y_hat'] = np.zeros([self.y_shape[0],
-                                                          self.y_shape[0], 
+                                                          self.y_shape[0],
                                                           n_folds])
         self.cv_patterns['ccms']['cov_y'] = np.zeros([self.y_shape[0],
-                                                          self.y_shape[0], 
+                                                          self.y_shape[0],
                                                           n_folds])
         self.cv_patterns['ccms']['cov_components'] = np.zeros([self.specs['n_latent'],
                                                                self.specs['n_latent'],  
                                                                n_folds])
         self.cv_patterns['ccms']['cov_dmx'] = np.zeros([self.y_shape[0],
-                                                          self.y_shape[0], 
+                                                          self.y_shape[0],
                                                           n_folds])
         self.cv_patterns['ccms']['cov_tconv'] = np.zeros([self.y_shape[0],
-                                                          self.y_shape[0], 
+                                                          self.y_shape[0],
                                                           n_folds])
-        
+
         self.cv_patterns['ccms']['psds'] = np.zeros([self.nfft,
                                                      self.specs['n_latent'],
                                                           n_folds])
-        self.cv_patterns['ind_top_o3'] = np.zeros([self.specs['n_latent'], 
+        self.cv_patterns['ind_top_o3'] = np.zeros([self.specs['n_latent'],
                                                   self.y_shape[0],
                                                   n_folds])
-        self.cv_patterns['ind_top_o2'] = np.zeros([self.specs['n_latent'], 
+        self.cv_patterns['ind_top_o2'] = np.zeros([self.specs['n_latent'],
                                                   self.y_shape[0],
                                                   n_folds])
-                                   
-                                   
-        
+
+
+
         for method in methods:
-            print(method)
+            #print(method)
             self.cv_patterns[method]['feature_relevance'] = np.zeros([n_t_pooled,
                                                          self.specs['n_latent'],
                                                          self.y_shape[0],
                                                          n_folds])
     def collect_patterns(self, fold=0, n_folds=1, n_comp=1, shapley_order=0,
-                         methods=['weight', 
-                                  'weight_norm', 
+                         methods=['weight',
+                                  'weight_norm',
                                   'output_corr']):
         """
         Compute and store patterns during cross-validation.
@@ -939,23 +939,23 @@ class LFCNN(BaseModel):
             methods.append('shap_o2')
         if shapley_order > 2:
             methods.append('shap_o3')
-        print(methods)
+        #print(methods)
         patterns_struct = self.compute_patterns(shapley_order=shapley_order, methods=methods)
         if not np.any(self.cv_patterns['freqs']):
             self.cv_patterns['freqs'] = patterns_struct['freqs']
-        
+
         self.cv_patterns['dcov']['input_spatial'][:, :, fold] = patterns_struct['dcov']['input_spatial']
         self.cv_patterns['dcov']['class_conditional'][:, :, :, fold] = patterns_struct['dcov']['class_conditional']
         if shapley_order > 0:
             self.cv_patterns['compwise_loss']['feature_relevance'][:, :, :, fold] = patterns_struct['compwise_loss']
-        
+
         if shapley_order > 1:
             self.cv_patterns['shap_o2']['feature_relevance'][:, :, :, fold] = patterns_struct['shap_o2']
             self.cv_patterns['ind_top_o2'][:, :, fold] = patterns_struct['ind_top_o2']
         if shapley_order > 2:
             self.cv_patterns['shap_o3']['feature_relevance'][:, :, :, fold] = patterns_struct['shap_o3']
             self.cv_patterns['ind_top_o3'][:, :, fold] = patterns_struct['ind_top_o3']
-        
+
 
         self.cv_patterns['output_corr']['feature_relevance'][:, :, :, fold] = patterns_struct['corr_to_output']
         self.cv_patterns['weight']['feature_relevance'][:, :, :, fold] = patterns_struct['weights']['out_weights']
@@ -1040,7 +1040,7 @@ class LFCNN(BaseModel):
         original_weights = self.km.get_weights()
         #Basic pefroamnce with full original weights
         base_loss, base_performance = self.km.evaluate(X, y, verbose=0)
-        
+
         #This is mutable array used to zero indexed weights and set km.weights
         model_weights = original_weights.copy()
         n_t = self.pooled.shape[2]
@@ -1050,15 +1050,15 @@ class LFCNN(BaseModel):
         #n_out_t = weights['out_weights'].shape[0]
         #n_out_y = weights['out_weights'].shape[-1]
         #output containers
-        
+
         losses = np.zeros([self.specs['n_latent'], n_y])
-        #Pre-generate flat indices for each class and component 
+        #Pre-generate flat indices for each class and component
         print(n_t, n_components, n_y, n_t*n_components*n_y)
         flat_inds = np.array([[np.ravel_multi_index((np.arange(n_t), c_i, i_y), (n_t, n_components, n_y))
-                     for c_i in range(n_components)] 
+                     for c_i in range(n_components)]
                               for i_y in range(n_y)]) #n_y, n_com, n_t
         print(flat_inds.shape, np.max(flat_inds))
-        
+
         for jj in range(n_y):
             feature_relevance_loss = defaultdict(int)
             best[jj]['o1'] = -np.inf
@@ -1074,25 +1074,25 @@ class LFCNN(BaseModel):
                 #zero all weights of i-th component
                 #print(flat_inds[jj, i, :], ' i:', i, ' jj:', jj)
                 old_weights = mutable_weights.flat[flat_inds[jj, i, :]].copy()
-                mutable_weights.flat[flat_inds[jj, i, :]] = 0. 
+                mutable_weights.flat[flat_inds[jj, i, :]] = 0.
                 model_weights[-2] = mutable_weights
                 #model_weights[-1] = mutable_bias
-                
+
                 self.km.set_weights(model_weights)
-                new_loss = self.km.evaluate(X, y, verbose=0)[0] 
-                
+                new_loss = self.km.evaluate(X, y, verbose=0)[0]
+
                 losses[i, jj] = new_loss - base_loss
                 #loss_per_component.append(base_loss - loss)
                 basic_key = '-'.join([str(i), 'self'])
                 if new_loss - base_loss > best[jj]['o1']:
                     best[jj]['o1'] = new_loss - base_loss
                     best[jj]['-'.join(['key', 'o1'])] = basic_key
-                    
+
                 feature_relevance_loss[basic_key] = new_loss - base_loss # larger difference is better
                 mutable_weights.flat[flat_inds[jj, i, :]] = old_weights
                 if verbose:
                     print("SHAP order 1 {}/{} : {:.4f}".format(i, len(candidate_inds), losses[i, jj]))
-                
+
             if order > 1:
                 best[jj]['o2'] = -np.inf
                 best[jj]['-'.join(['key', 'o2'])] = ''
@@ -1104,25 +1104,25 @@ class LFCNN(BaseModel):
                 for i1, c in enumerate(candidate_inds2):
                     #zero out component 1
                     old_weights = mutable_weights.flat[flat_inds[jj, c, :]].copy()
-                    mutable_weights.flat[flat_inds[jj, c, :]] = 0. 
+                    mutable_weights.flat[flat_inds[jj, c, :]] = 0.
                     for i2 in range(i1 + 1, len(candidate_inds2)):
                         #only explore combinations from i+1 onwards
                         old_weights2 = mutable_weights.flat[flat_inds[jj, candidate_inds2[i2], :]].copy()
                         mutable_weights.flat[flat_inds[jj, candidate_inds2[i2], :]] = 0.
                         model_weights[-2] = mutable_weights
                         self.km.set_weights(model_weights)
-                        new_loss = self.km.evaluate(X, y, verbose=0)[0] 
+                        new_loss = self.km.evaluate(X, y, verbose=0)[0]
                         interaction_key = '-'.join([str(c), str(candidate_inds2[i2])])
                         if new_loss - base_loss > best[jj]['o2']:
                             best[jj]['o2'] = new_loss - base_loss
                             best[jj]['-'.join(['key', 'o2'])] = interaction_key
                         feature_relevance_loss[interaction_key] = new_loss - base_loss
-                        #for i3 in range(i2, len(candidate_loss3)): 
+                        #for i3 in range(i2, len(candidate_loss3)):
                         mutable_weights.flat[flat_inds[jj, candidate_inds2[i2], :]] = old_weights2
                     if verbose:
                         print("SHAP order 2 {}/{}".format(i1, len(candidate_inds2)))
                     mutable_weights.flat[flat_inds[jj, c, :]] = old_weights
-            
+
             if order > 2:
                 out = defaultdict(list)
                 best[jj]['o3'] = -np.inf
@@ -1133,7 +1133,7 @@ class LFCNN(BaseModel):
                     out[k2].append(feature_relevance_loss[k])
 
                 shap2 = np.array([np.mean(out[str(k)]) for k in candidate_inds2])
-                
+
                 top_inds2 = np.where(shap2 >= np.median(shap2))[0]
                 candidate_inds3 = candidate_inds2[top_inds2]
                 if verbose:
@@ -1141,7 +1141,7 @@ class LFCNN(BaseModel):
                 for i1, c in enumerate(candidate_inds3):
                     #zero out component 1
                     old_weights = mutable_weights.flat[flat_inds[jj, c, :]].copy()
-                    mutable_weights.flat[flat_inds[jj, c, :]] = 0. 
+                    mutable_weights.flat[flat_inds[jj, c, :]] = 0.
                     for i2 in range(i1 + 1, len(candidate_inds3)):
                         #only explore combinations from i+1 onwards
                         old_weights2 = mutable_weights.flat[flat_inds[jj, candidate_inds2[i2], :]].copy()
@@ -1151,21 +1151,21 @@ class LFCNN(BaseModel):
                             mutable_weights.flat[flat_inds[jj, candidate_inds3[i3], :]] = 0.
                             model_weights[-2] = mutable_weights
                             self.km.set_weights(model_weights)
-                            new_loss = self.km.evaluate(X, y, verbose=0)[0] 
-                            
+                            new_loss = self.km.evaluate(X, y, verbose=0)[0]
+
                             interaction_key = '-'.join([str(c), str(candidate_inds3[i2]), str(candidate_inds3[i3])])
-                            
+
                             if new_loss - base_loss > best[jj]['o3']:
                                 best[jj]['o3'] = new_loss - base_loss
                                 best[jj]['-'.join(['key', 'o3'])] = interaction_key
                             feature_relevance_loss[interaction_key] = new_loss - base_loss
                             mutable_weights.flat[flat_inds[jj, candidate_inds3[i3], :]] = old_weights3
-                            
+
                         mutable_weights.flat[flat_inds[jj, candidate_inds2[i2], :]] = old_weights2
                     if verbose:
                         print("SHAP order 3 {}/{}".format(i1, len(candidate_inds3)))
                     mutable_weights.flat[flat_inds[jj, c, :]] = old_weights
-                    
+
                 for k in feature_relevance_loss.keys():
                     feat_keys = k.split('-')
                     if len(feat_keys) == 3:
@@ -1174,14 +1174,14 @@ class LFCNN(BaseModel):
                          out[k2].append(feature_relevance_loss[k])
                          out[k3].append(feature_relevance_loss[k])
 
-            
+
             #print(best[jj])
             relevances = np.zeros(self.specs['n_latent'])
-            
+
             best[jj]['o1_ind'] = int(best[jj]['key-o1'].split('-')[0])
             best[jj]['o1_sorting'] = np.argsort(losses[:, jj])
             best[jj]['o1_relevances'] = losses[:, jj]
-            
+
             if order > 1:
                 best[jj]['o2_sorting'] = candidate_inds2[np.argsort(shap2)]
                 best[jj]['o2_relevances'] = relevances.copy()
@@ -1189,7 +1189,7 @@ class LFCNN(BaseModel):
                 o2_inds = np.array([int(ind) for ind in best[jj]['key-o2'].split('-')])
                 best[jj]['o2_inds'] = relevances.copy()
                 best[jj]['o2_inds'][o2_inds] = 1.
-            
+
             if order > 2:
                 shap3 = np.array([np.mean(out[str(k)]) for k in candidate_inds3])
                 best[jj]['o3_relevances'] = relevances.copy()
@@ -1198,12 +1198,12 @@ class LFCNN(BaseModel):
                 best[jj]['o3_inds'] = relevances.copy()
                 best[jj]['o3_inds'][o3_inds] = 1.
                 best[jj]['o3_sorting'] = candidate_inds3[np.argsort(shap3)]
-       
+
         #losses = np.repeat(losses[np.newaxis, ...], n_t, axis=0)
-        
+
         self.km.set_weights(original_weights)
         return feature_relevance_loss, best
-    
+
     def get_output_correlations(self, activations, y_true):
         """Computes a similarity metric between each of the extracted
         features and the target variable.
@@ -1321,17 +1321,17 @@ class LFCNN(BaseModel):
 
     def make_fake_evoked(self, topos, sensor_layout):
         """
-        Create mne.evoked.Evoked obejct for plotting and source localizing 
+        Create mne.evoked.Evoked obejct for plotting and source localizing
         model activation patterns.
-        
+
         Parameters:
         ----------
-        
+
         topos : np.array (n_channels, n_patterns)
             Spatial activation patterns
-        
+
         sensor_layout : str or mne.channels.Layout
-            
+
         """
         if 'info' not in self.meta.data.keys():
             lo = channels.read_layout(sensor_layout)
@@ -1553,56 +1553,8 @@ class LFCNN(BaseModel):
             figname = '-'.join([self.meta.data['path'] + self.scope, self.meta.data['data_id'], 'true', "topos.svg"])
             t.savefig(figname, format='svg', transparent=True)
 
-class SourceNet(LFCNN):
-    """
-        Petrosyan, A., Sinkin, M., Lebedev, M. A., & Ossadtchi, A.  Decoding and interpreting cortical signals with
-        a compact convolutional neural network, 2021, Journal of Neural Engineering, 2021,
-        https://doi.org/10.1088/1741-2552/abe20e
-    """
-    def __init__(self, meta, dataset=None, specs=None, specs_prefix=False):
-        if specs is None:
-            specs=dict()
-        super().__init__(meta, dataset, specs_prefix)
-        self.scope = 'sourceNet'
-        
 
-    def build_graph(self):
-        self.tconv = LFTConv(
-            size=self.specs['n_latent'],
-            nonlin=self.specs['nonlin'],
-            filter_length=self.specs['filter_length'],
-            padding=self.specs['padding'],
-            specs=self.specs)
-        
-        self.tconv_out = self.tconv(self.inputs)
-        
-        self.dmx = DeMixing(size=self.specs['n_latent'], 
-                            nonlin=tf.keras.activations.linear,
-                            axis=3, specs=self.specs)
-        self.dmx_out = self.dmx(self.tconv_out)
-
-        
-        self.tpool = TempPooling(pooling=self.specs['pooling'],
-                                 pool_type=self.specs['pool_type'],
-                                 stride=self.specs['stride'],
-                                 padding='SAME'
-                                 )
-        
-        self.tpooled = self.tpool(self.dmx_out)
-
-
-
-        self.dropout = Dropout(self.specs['dropout'], noise_shape=None)(self.tpooled)
-        
-        self.fin_fc = FullyConnected(size=self.out_dim, 
-                                     nonlin=tf.keras.activations.linear,
-                                     specs=self.specs)
-
-        self.y_pred = self.fin_fc(self.dropout)
-
-        return self.y_pred
-
-            
+           
 class EnvelopNet(LFCNN):
     """
         Petrosyan, A., Sinkin, M., Lebedev, M. A., & Ossadtchi, A.  Decoding and interpreting cortical signals with
@@ -1626,7 +1578,7 @@ class EnvelopNet(LFCNN):
         meta.model_specs.setdefault('l2_scope', [])
         meta.model_specs.setdefault('unitnorm_scope', [])
         super().__init__(meta, dataset, specs_prefix)
-        self.scope = 'envelopnet_ll'
+        self.scope = 'envelopnet_lv'
         meta.model_specs['scope'] = self.scope
         self.specs = meta.model_specs
         
@@ -1637,23 +1589,23 @@ class EnvelopNet(LFCNN):
                             axis=3, specs=self.specs)
         self.dmx_out = self.dmx(self.inputs)
 
-        self.tconv = LFTConv(
+        self.tconv = VARConv(
             size=self.specs['n_latent'],
             nonlin=self.specs['nonlin'],
             filter_length=self.specs['filter_length'],
             padding=self.specs['padding'],
             specs=self.specs)
-        
+
         self.tconv_out = self.tconv(self.dmx_out)
         self.tpool = TempPooling(pooling=1,#self.specs['filter_length']//2,
                                  pool_type=self.specs['pool_type'],
                                  stride=1,#self.specs['filter_length']//2,
                                  padding='SAME'
                                  )
-        
+
         self.tpooled = self.tpool(self.tconv_out)
 
-        self.envconv = LFTConv(
+        self.envconv = VARConv(
             size=self.specs['n_latent'],
             nonlin=self.specs['nonlin'],
             filter_length=self.specs['filter_length'],
@@ -1769,73 +1721,73 @@ class EnvelopNet(LFCNN):
         self.tc_out = np.squeeze(tc_out)
         self.corr_to_output = self.get_output_correlations(y)
 
-    def plot_patterns(
-        self, sensor_layout=None, sorting='l2', percentile=90,
-        scale=False, class_names=None, info=None
-    ):
-        order, ts = self._sorting(sorting)
-        self.uorder = order.ravel()
-        l_u = len(self.uorder)
-        if info:
-            info.__setstate__(dict(_unlocked=True))
-            info['sfreq'] = 1.
-            self.fake_evoked = evoked.EvokedArray(self.patterns, info, tmin=0)
-            if l_u > 1:
-                self.fake_evoked.data[:, :l_u] = self.fake_evoked.data[:, self.uorder]
-            elif l_u == 1:
-                self.fake_evoked.data[:, l_u] = self.fake_evoked.data[:, self.uorder[0]]
-            self.fake_evoked.crop(tmax=float(l_u))
-            if scale:
-                _std = self.fake_evoked.data[:, :l_u].std(0)
-                self.fake_evoked.data[:, :l_u] /= _std
-        elif sensor_layout:
-            lo = channels.read_layout(sensor_layout)
-            info = create_info(lo.names, 1., sensor_layout.split('-')[-1])
-            orig_xy = np.mean(lo.pos[:, :2], 0)
-            for i, ch in enumerate(lo.names):
-                if info['chs'][i]['ch_name'] == ch:
-                    info['chs'][i]['loc'][:2] = (lo.pos[i, :2] - orig_xy)/3.
-                    #info['chs'][i]['loc'][4:] = 0
-                else:
-                    print("Channel name mismatch. info: {} vs lo: {}".format(
-                        info['chs'][i]['ch_name'], ch))
+    # def plot_patterns(
+    #     self, sensor_layout=None, sorting='l2', percentile=90,
+    #     scale=False, class_names=None, info=None
+    # ):
+    #     order, ts = self._sorting(sorting)
+    #     self.uorder = order.ravel()
+    #     l_u = len(self.uorder)
+    #     if info:
+    #         info.__setstate__(dict(_unlocked=True))
+    #         info['sfreq'] = 1.
+    #         self.fake_evoked = evoked.EvokedArray(self.patterns, info, tmin=0)
+    #         if l_u > 1:
+    #             self.fake_evoked.data[:, :l_u] = self.fake_evoked.data[:, self.uorder]
+    #         elif l_u == 1:
+    #             self.fake_evoked.data[:, l_u] = self.fake_evoked.data[:, self.uorder[0]]
+    #         self.fake_evoked.crop(tmax=float(l_u))
+    #         if scale:
+    #             _std = self.fake_evoked.data[:, :l_u].std(0)
+    #             self.fake_evoked.data[:, :l_u] /= _std
+    #     elif sensor_layout:
+    #         lo = channels.read_layout(sensor_layout)
+    #         info = create_info(lo.names, 1., sensor_layout.split('-')[-1])
+    #         orig_xy = np.mean(lo.pos[:, :2], 0)
+    #         for i, ch in enumerate(lo.names):
+    #             if info['chs'][i]['ch_name'] == ch:
+    #                 info['chs'][i]['loc'][:2] = (lo.pos[i, :2] - orig_xy)/3.
+    #                 #info['chs'][i]['loc'][4:] = 0
+    #             else:
+    #                 print("Channel name mismatch. info: {} vs lo: {}".format(
+    #                     info['chs'][i]['ch_name'], ch))
 
-            self.fake_evoked = evoked.EvokedArray(self.patterns, info)
+    #         self.fake_evoked = evoked.EvokedArray(self.patterns, info)
 
-            if l_u > 1:
-                self.fake_evoked.data[:, :l_u] = self.fake_evoked.data[:, self.uorder]
-            elif l_u == 1:
-                self.fake_evoked.data[:, l_u] = self.fake_evoked.data[:, self.uorder[0]]
-            self.fake_evoked.crop(tmax=float(l_u))
-            if scale:
-                _std = self.fake_evoked.data[:, :l_u].std(0)
-                self.fake_evoked.data[:, :l_u] /= _std
-        else:
-            raise ValueError("Specify sensor layout")
+    #         if l_u > 1:
+    #             self.fake_evoked.data[:, :l_u] = self.fake_evoked.data[:, self.uorder]
+    #         elif l_u == 1:
+    #             self.fake_evoked.data[:, l_u] = self.fake_evoked.data[:, self.uorder[0]]
+    #         self.fake_evoked.crop(tmax=float(l_u))
+    #         if scale:
+    #             _std = self.fake_evoked.data[:, :l_u].std(0)
+    #             self.fake_evoked.data[:, :l_u] /= _std
+    #     else:
+    #         raise ValueError("Specify sensor layout")
 
 
-        if np.any(self.uorder):
-            nfilt = max(self.out_dim, 8)
-            nrows = max(1, l_u//nfilt)
-            ncols = min(nfilt, l_u)
-            f, ax = plt.subplots(nrows, ncols, sharey=True)
-            plt.tight_layout()
-            f.set_size_inches([16, 3])
-            ax = np.atleast_2d(ax)
+    #     if np.any(self.uorder):
+    #         nfilt = max(self.out_dim, 8)
+    #         nrows = max(1, l_u//nfilt)
+    #         ncols = min(nfilt, l_u)
+    #         f, ax = plt.subplots(nrows, ncols, sharey=True)
+    #         plt.tight_layout()
+    #         f.set_size_inches([16, 3])
+    #         ax = np.atleast_2d(ax)
 
-            for ii in range(nrows):
-                fake_times = np.arange(ii * ncols,  (ii + 1) * ncols, 1.)
-                vmax = np.percentile(self.fake_evoked.data[:, :l_u], 95)
-                self.fake_evoked.plot_topomap(
-                    times=fake_times,
-                    axes=ax[ii],
-                    colorbar=False,
-                    vmax=vmax,
-                    scalings=1,
-                    time_format="Branch #%g",
-                    title='Patterns ('+str(sorting)+')',
-                    outlines='head',
-                )
+    #         for ii in range(nrows):
+    #             fake_times = np.arange(ii * ncols,  (ii + 1) * ncols, 1.)
+    #             vmax = np.percentile(self.fake_evoked.data[:, :l_u], 95)
+    #             self.fake_evoked.plot_topomap(
+    #                 times=fake_times,
+    #                 axes=ax[ii],
+    #                 colorbar=False,
+    #                 vmax=vmax,
+    #                 scalings=1,
+    #                 time_format="Branch #%g",
+    #                 title='Patterns ('+str(sorting)+')',
+    #                 outlines='head',
+    #             )
 
     def branchwise_loss(self, X, y):
         model_weights_original = self.km.get_weights().copy()
@@ -1860,6 +1812,86 @@ class EnvelopNet(LFCNN):
             losses.append(self.km.evaluate(X, y, verbose=0)[0])
         self.km.set_weights(model_weights_original)
         self.branch_relevance_loss = base_loss - np.array(losses)
+
+
+class SourceNet(BaseModel):
+    """
+
+    """
+    def __init__(self, meta, dataset=None, specs=None, specs_prefix=False):
+        self.nfft = 128
+        if specs:
+            meta.update(model_specs=specs)
+        #specs = meta.model_specs
+        self.scope = 'sourcenet'
+        meta.model_specs.setdefault('filter_length', 7)
+        meta.model_specs.setdefault('n_latent', 32)
+        meta.model_specs.setdefault('pooling', 2)
+        meta.model_specs.setdefault('stride', 2)
+        meta.model_specs.setdefault('padding', 'SAME')
+        meta.model_specs.setdefault('pool_type', 'max')
+        meta.model_specs.setdefault('nonlin', tf.nn.relu)
+        meta.model_specs.setdefault('l1_lambda', 3e-4)
+        meta.model_specs.setdefault('l2_lambda', 0.)
+        meta.model_specs.setdefault('l1_scope', ['fc', 'demix', 'lf_conv'])
+        meta.model_specs.setdefault('l2_scope', [])
+        meta.model_specs.setdefault('unitnorm_scope', [])
+        meta.model_specs['scope'] = self.scope
+        super(SourceNet, self).__init__(meta, dataset, specs_prefix)
+
+
+
+
+    def build_graph(self):
+
+
+        self.tconv = LFTConv(
+            size=self.specs['n_latent'],
+            nonlin=self.specs['nonlin'],
+            filter_length=self.specs['filter_length'],
+            padding=self.specs['padding'],
+            specs=self.specs)
+
+        self.tconv_out = self.tconv(self.inputs)
+
+
+        self.dmx = DeMixing(size=self.specs['n_latent'], nonlin=tf.identity,
+                            axis=3, specs=self.specs)
+        self.dmx_out = self.dmx(self.tconv_out)
+
+        self.tpool = TempPooling(pooling=self.specs['filter_length']//2,
+                                  pool_type=self.specs['pool_type'],
+                                  stride=self.specs['filter_length']//2,
+                                  padding='SAME'
+                                  )
+
+        self.tpooled = self.tpool(self.dmx_out)
+
+        self.envconv = LFTConv(
+            size=self.specs['n_latent'],
+            nonlin=self.specs['nonlin'],
+            filter_length=self.specs['filter_length'],
+            padding=self.specs['padding'],
+            specs=self.specs
+        )
+
+        self.envconv_out = self.envconv(self.tpooled)
+
+        self.envpool = TempPooling(pooling=self.specs['pooling'],
+                                  pool_type=self.specs['pool_type'],
+                                  stride=self.specs['stride'],
+                                  padding='SAME'
+                                  )
+        self.pooled = self.envpool(self.envconv_out)
+
+        self.dropout = Dropout(self.specs['dropout'], noise_shape=None)(self.pooled)
+
+        self.fin_fc = FullyConnected(size=self.out_dim, nonlin=tf.identity,
+                            specs=self.specs)
+
+        self.y_pred = self.fin_fc(self.dropout)
+
+        return self.y_pred
 
     # def plot_branch(
     #     self,

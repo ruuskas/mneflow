@@ -70,15 +70,16 @@ class BaseModel():
             specified uses default hyperparameters for each implemented model.
         """
         self.specs = meta.model_specs
-        meta.model_specs['model_path'] = os.path.join(meta.data['path'], 
-                                                      'models')  
+        meta.model_specs['model_path'] = os.path.join(meta.data['path'],
+                                                      'models')
         self.current_fold = 0
+
         self.meta = meta
         self.model_path = meta.model_specs['model_path'] #os.path.join(meta.data['path'], 'models')
         if not os.path.exists(self.model_path):
-            os.mkdir(self.model_path)            
+            os.mkdir(self.model_path)
 
-        
+
         if dataset:
             self.dataset = dataset
         elif not dataset and meta:
@@ -105,7 +106,7 @@ class BaseModel():
         self.cv_weights = defaultdict(list)
         if not hasattr(self, 'scope'):
             self.scope = 'basemodel'
-        
+
         if specs_prefix:
            self.specs_prefix = '_'.join([str(v).replace('.', '-') for k,v in self.specs.items() if k not in ['nonlin', 'model_path', 'l1_scope', 'l2_scope', 'unitnorm_scope', 'scope']])
         else:
@@ -115,8 +116,8 @@ class BaseModel():
 
 
 
-    def build(self, optimizer="adam", 
-              loss=None, 
+    def build(self, optimizer="adam",
+              loss=None,
               metrics=None, mapping=None,
               learn_rate=3e-4):
         """Compile a model.
@@ -150,7 +151,7 @@ class BaseModel():
         params = {"optimizer": tf.optimizers.get(optimizer).from_config(
                                             {"learning_rate":learn_rate})}
 
-        if loss:    
+        if loss:
             params["loss"] = tf.keras.losses.get(loss)
             loss_name = loss
 
@@ -162,7 +163,7 @@ class BaseModel():
        # Initialize optimizer
         if self.dataset.h_params["target_type"] in ['float', 'signal']:
             params.setdefault("loss", tf.keras.losses.MeanSquaredError(name='MSE'))
-                
+
             params.setdefault("metrics", [tf.keras.metrics.RootMeanSquaredError(name="RMSE")])
 
         elif self.dataset.h_params["target_type"] in ['int']:
@@ -173,17 +174,17 @@ class BaseModel():
         self.km.compile(optimizer=params["optimizer"],
                         loss=params["loss"],
                         metrics=params["metrics"])
-        
+
         if not loss and self.dataset.h_params["target_type"] in ['float', 'signal']:
             loss_name = 'MSE'
         elif not loss:
             loss_name = 'Cat_CE'
         else:
-            loss_name = params['loss'].__name__
+            loss_name = params['loss'].name
         _ = params.pop('loss')
         metrics = params.pop('metrics')
         metric_names = ':'.join([m.name for m in metrics])
-        
+
         param_names = {k: v.name for k,v in params.items()}
         param_names['metrics'] = metric_names
         param_names['loss'] = loss_name
@@ -191,7 +192,7 @@ class BaseModel():
         param_names['trained'] = False
         self.meta.update(train_params=param_names)
 
-        self.km.save_weights(os.path.join(self.model_path, 
+        self.km.save_weights(os.path.join(self.model_path,
                                           ''.join([self.model_name,
                                                    self.specs_prefix,
                                                    '_init.weights.h5'])))
@@ -257,32 +258,32 @@ class BaseModel():
 
         class_weights : None, dict
             Whether to apply cutom wegihts fro each class
-        
+
         noisy_labels : bool, optional
             Train model with addition gaussinan noise to labels. (Experimental)
             Does not work with class_weights
-        
+
         noise_std : float, optional
             Standard deviation of the noise added to labels. (Experimental)
             Does not work with class_weights
         """
 
-        
+
         if not eval_step:
             train_size = self.dataset.h_params['train_size']
             eval_step = train_size // self.dataset.h_params['train_batch'] + 1
-        
-        train_params = dict(n_epochs=n_epochs, 
-                            eval_step=eval_step, 
-                            early_stopping=early_stopping, 
+
+        train_params = dict(n_epochs=n_epochs,
+                            eval_step=eval_step,
+                            early_stopping=early_stopping,
                             mode=mode,
                             min_delta=min_delta)
-        
+
         self.meta.update(train_params=train_params)
-        
-        
+
+
         rmss = defaultdict(list)
-        
+
         self.cv_losses = []
         self.cv_metrics = []
         self.cv_test_losses = []
@@ -297,7 +298,7 @@ class BaseModel():
         else:
             class_weights = None
         print("Class weights: ", class_weights)
-        
+
         if mode == 'single_fold':
             n_folds = 1
         elif mode == 'cv':
@@ -308,10 +309,10 @@ class BaseModel():
 
         if collect_patterns and self.scope=='lfcnn':
             self.init_pattern_struct(n_folds, freqs=None)
-        
+
         if fold:
             self.current_fold = fold
-        
+
         for jj in range(self.current_fold, n_folds):
             self.current_fold = jj
             print("Running {} fold: {}".format(mode, self.current_fold))
@@ -324,9 +325,9 @@ class BaseModel():
                                                    train_batch=self.dataset.training_batch,
                                                    test_batch=self.dataset.validation_batch,
                                                    split=True, val_fold_ind=0)
-                
+
             else:
-                
+
                 train, val = self.dataset._build_dataset(self.dataset.h_params['train_paths'],
                                                    train_batch=self.dataset.training_batch,
                                                    test_batch=self.dataset.validation_batch,
@@ -339,7 +340,7 @@ class BaseModel():
                 stop_early.best = np.inf
                 self.t_hist = self.km.fit(train,
                                    validation_data=val,
-                                   epochs=self.meta.train_params['n_epochs'], 
+                                   epochs=self.meta.train_params['n_epochs'],
                                    steps_per_epoch=self.meta.train_params['eval_step'],
                                    shuffle=True,
                                    validation_steps=self.dataset.validation_steps,
@@ -349,20 +350,20 @@ class BaseModel():
                 model_path = os.path.join(self.model_path,
                                           ''.join([self.model_name,
                                                    self.specs_prefix]))
-                trainer = NoisyTrainer(self.km, 
+                trainer = NoisyTrainer(self.km,
                                        model_path = model_path,
                                        noise_std = noise_std,  # Noise standard deviation
                                        patience = self.meta.train_params['early_stopping'],     # Stop if no improvement for 5 epochs
                                        min_delta = self.meta.train_params['min_delta'] # Minimum change to count as improvement
                                        )
 
-                self.t_hist = trainer.train(train, val, 
-                                            epochs=self.meta.train_params['n_epochs'], 
+                self.t_hist = trainer.train(train, val,
+                                            epochs=self.meta.train_params['n_epochs'],
                                             eval_step=self.meta.train_params['eval_step']
                                             )
-            
+
             self.meta.train_params.update({"trained":True})
-            
+
             v_loss, v_metric = self.evaluate(val)
             print("""Fold: {} Validation performance:\n
                   Loss: {:.4f}, 
@@ -388,7 +389,7 @@ class BaseModel():
                                                    repeat=False)
             else:
                 test = None
-            
+
             if test:
 
                 t_loss, t_metric = self.evaluate(test)
@@ -397,18 +398,18 @@ class BaseModel():
                       Metric: {:.4f}""".format(jj, t_loss, t_metric))
                 self.cv_test_losses.append(t_loss)
                 self.cv_test_metrics.append(t_metric)
-                
-            
-            
+
+
+
             y_true, y_pred = self.predict(val)
-            
+
 
             if self.dataset.h_params['target_type'] == 'float':
                 rms = regression_metrics(y_true, y_pred)
                 for k,v in rms.items():
                     rmss[k].append(v)
                 print("Validation set: Corr =", rms['cc'], " R2 =", rms['r2'])
-            
+
             else:
                 self.cm += self._confusion_matrix(y_true, y_pred)
                 rms = None
@@ -426,21 +427,18 @@ class BaseModel():
                                                            '_init.weights.h5'])),
                                      skip_mismatch=True)
                 self.shuffle_weights()
-                
-                
+
+
             else:
                 print("Not shuffling the weights for the last fold")
-
-            
-        
 
         metrics = self.cv_metrics
         losses = self.cv_losses
 
-        print("""{} with {} folds completed. 
-              Loss: {:.4f} +/- {:.4f}. 
+        print("""{} with {} folds completed.
+              Loss: {:.4f} +/- {:.4f}.
               Metric: {:.4f} +/- {:.4f}""".format(mode, n_folds,
-                                                  np.mean(losses), np.std(losses), 
+                                                  np.mean(losses), np.std(losses),
                                                   np.mean(metrics), np.std(metrics)))
 
         if self.dataset.h_params['target_type'] == 'float':
@@ -457,7 +455,7 @@ class BaseModel():
             rms = None
 
         print("""{} with {} fold(s) completed. \n
-              Validation Performance: 
+              Validation Performance:
               Loss: {:.4f} +/- {:.4f}.
               Metric: {:.4f} +/- {:.4f}"""
               .format(mode, n_folds,
@@ -466,21 +464,22 @@ class BaseModel():
         
         if len(self.dataset.h_params['test_paths']) > 0 or mode == 'loso':
             print("""\n
-              Test Performance: 
+              Test Performance:
               Loss: {:.4f} +/- {:.4f}.
               Metric: {:.4f} +/- {:.4f}"""
-              .format(np.mean(self.cv_test_losses), 
+              .format(np.mean(self.cv_test_losses),
                       np.std(self.cv_test_losses),
-                      np.mean(self.cv_test_metrics), 
+                      np.mean(self.cv_test_metrics),
                       np.std(self.cv_test_metrics)))
         if compute_pvalues:
             self.meta.update(results={'cv_pvals':cv_pvals})
+        
         self.meta.train_params.update({"trained":True})
         self.update_log(rms=rms, prefix=mode)
         self.save()
         #return self.cv_losses, self.cv_metrics
 
-            
+
     def prune_weights(self, increase_regularization=3.):
         stop_early = tf.keras.callbacks.EarlyStopping(monitor='val_loss',
                                                       min_delta=1e-6,
@@ -519,7 +518,7 @@ class BaseModel():
         y_p = _onehot(np.argmax(y_pred,1), n_classes=self.y_shape[-1])
         cm = np.dot(y_p.T, y_true)
         return cm
-    
+
     def update_results(self):
         """Add training results to training log"""
         results = dict()
@@ -528,7 +527,7 @@ class BaseModel():
         results['cv_metrics'] = self.cv_metrics
         results['cv_losses'] = self.cv_losses
         results['cv_metric_pvalues'] = self.cv_metric_pvalues
-        
+
         tr_loss, tr_metric = self.evaluate(self.dataset.train)
         results['tr_metric'] = tr_metric
         results['tr_loss'] = tr_loss
@@ -552,9 +551,9 @@ class BaseModel():
             results['test_loss'] = "NA"
             results['test_metrics'] = "NA"
             results['test_losses'] = "NA"
-        
+
         results['cm'] = self.cm
-        
+
         self.meta.update(results=results)
     
     def permutation_p_value(self, dataset=None, n_perm=10000):
@@ -614,7 +613,7 @@ class BaseModel():
         _ = data_dict.pop('train_paths')
         _ = data_dict.pop('test_paths')
         log['data_id'] = data_dict.pop('data_id')
-        
+
         #results info
         results_dict = self.meta.results.copy()
         log['train metric'] = results_dict.pop('tr_metric')
@@ -623,8 +622,8 @@ class BaseModel():
         log['train loss'] = results_dict.pop('tr_loss')
         log['validation loss'] = results_dict.pop('v_loss')
         log['test loss'] =  results_dict.pop('test_loss')
-        
-        
+
+
         #format specs: architecture and regularization
         specs_dict = self.meta.model_specs.copy()
         specs_dict['l1_scope'] = '-'.join(self.meta.model_specs['l1_scope'])
@@ -633,14 +632,14 @@ class BaseModel():
         _ = specs_dict.pop('model_path')
         if isinstance(specs_dict['nonlin'], Callable):
             specs_dict['nonlin'] = specs_dict['nonlin'].__name__
-        
+
         log.update(specs_dict)
         #training paramters
         log.update(self.meta.train_params)
         log.update(data_dict)
         log.update(results_dict)
-        
-        
+
+
         self.log.update(log)
 
         with open(savepath, 'a+', newline='') as csv_file:
@@ -654,21 +653,21 @@ class BaseModel():
         """
         Saves the model and (optionally, patterns, confusion matrices)
         """
-        
+
         self.update_results()
         weights = {k: np.stack(self.cv_weights[k], -1) for k in self.cv_weights.keys()}
-        
+
         #Update and save meta file
         self.meta.update(data=self.dataset.h_params,
                          model_specs=self.specs,
                          patterns=self.cv_patterns,
                          weights=weights)
-        
+
         #save the model
         self.km.save(os.path.join(self.model_path, self.model_name + '.h5'))
         if hasattr(self, 'km_enc'):
             self.km_enc.save(os.path.join(self.model_path, self.model_name + 'encoder_.h5'))
-        
+
 
     def predict_sample(self, x):
         n_ch = self.dataset.h_params['n_ch']
@@ -712,8 +711,8 @@ class BaseModel():
         for batch_idx, (x, y_) in enumerate(dataset):
             if batch_idx >= n_batches:
                 break
-            
-        
+
+
             X.append(x)
             y.append(y_)
 
@@ -749,6 +748,124 @@ class BaseModel():
                                            steps=self.dataset.validation_steps,
                                            verbose=0)
         return  losses, metrics
+
+class SourceNet(BaseModel):
+    """SourceNet
+
+    For details see [1].
+
+    References
+    ----------
+        [1] I. Zubarev, et al., Adaptive neural network classifier for
+        decoding MEG signals. Neuroimage. (2019) May 4;197:425-434
+    """
+    def __init__(self, meta, dataset=None, specs_prefix=False):
+        """
+        Parameters
+        ----------
+        Dataset : mneflow.Dataset
+
+        specs : dict
+                dictionary of model hyperparameters {
+
+        n_latent : int
+            Number of latent components.
+            Defaults to 32.
+
+        nonlin : callable
+            Activation function of the temporal convolution layer.
+            Defaults to tf.nn.relu
+
+        filter_length : int
+            Length of spatio-temporal kernels in the temporal
+            convolution layer. Defaults to 7.
+
+        pooling : int
+            Pooling factor of the max pooling layer. Defaults to 2
+
+        pool_type : str {'avg', 'max'}
+            Type of pooling operation. Defaults to 'max'.
+
+        padding : str {'SAME', 'FULL', 'VALID'}
+            Convolution padding. Defaults to 'SAME'.}"""
+        self.scope = 'varcnn'
+        meta.model_specs.setdefault('filter_length', 7)
+        meta.model_specs.setdefault('n_latent', 32)
+        meta.model_specs.setdefault('pooling', 2)
+        meta.model_specs.setdefault('stride', 2)
+        meta.model_specs.setdefault('padding', 'SAME')
+        meta.model_specs.setdefault('pool_type', 'max')
+        meta.model_specs.setdefault('nonlin', tf.nn.relu)
+        meta.model_specs.setdefault('l1_lambda', 3e-4)
+        meta.model_specs.setdefault('l2_lambda', 0)
+        meta.model_specs.setdefault('l1_scope', ['fc', 'demix', 'lf_conv'])
+        meta.model_specs.setdefault('l2_scope', [])
+        meta.model_specs.setdefault('unitnorm_scope', [])
+        meta.model_specs['scope'] = self.scope
+        super(SourceNet, self).__init__(meta, dataset, specs_prefix)
+
+    def build_graph(self):
+        """Build computational graph using defined placeholder `self.X`
+        as input.
+
+        Returns
+        --------
+        y_pred : tf.Tensor
+            Output of the forward pass of the computational graph.
+            Prediction of the target variable.
+        """
+        # self.tconv = VARConv(size=self.specs['n_latent'],
+        #                      nonlin=self.specs['nonlin'],
+        #                      filter_length=self.specs['filter_length'],
+        #                      padding=self.specs['padding'],
+        #                      specs=self.specs
+        #                      )(self.inputs)
+        self.tconv = tf.keras.layers.DepthwiseConv2D(
+            kernel_size = (1, self.specs['filter_length']),
+            #strides=1,
+            padding='same',
+            depth_multiplier=self.specs['n_latent'],
+            data_format='channels_first',
+            dilation_rate=(1, 1),
+            activation=self.specs['nonlin'],
+            use_bias=True,
+            depthwise_initializer='glorot_uniform',
+            bias_initializer='zeros',
+            depthwise_regularizer=tf.keras.regularizers.l1(self.specs['l1_lambda']),
+            bias_regularizer=None,
+            activity_regularizer=None,
+            depthwise_constraint=None,
+            bias_constraint=None,
+            )(self.inputs)
+        print('tconv: ', self.tconv.shape )
+        self.pooled = TempPooling(pooling=self.specs['pooling'],
+                                  pool_type=self.specs['pool_type'],
+                                  stride=self.specs['stride'],
+                                  padding=self.specs['padding'],
+                                  )(self.tconv)
+
+        self.dmx = DeMixing(size=self.specs['n_latent'], nonlin=self.specs['nonlin'],
+                            axis=3, specs=self.specs)(self.pooled)
+
+        self.dmx1 = DeMixing(size=self.specs['n_latent'], nonlin=self.specs['nonlin'],
+                            axis=1, specs=self.specs)(self.dmx)
+
+
+
+
+        dropout = Dropout(self.specs['dropout'],
+                          noise_shape=None)(self.dmx1)
+
+        # fc1 = FullyConnected(size=self.specs['n_latent'],
+        #                      nonlin=self.specs['nonlin'],
+        #                      specs=self.specs)(dropout)
+
+        self.fin_fc = FullyConnected(size=self.out_dim, nonlin=tf.identity,
+                            specs=self.specs)
+
+        y_pred = self.fin_fc(dropout)
+
+        return y_pred
 
 
 
@@ -1016,7 +1133,7 @@ class LFLSTM(BaseModel):
 
 
     def build_graph(self):
-        
+
         self.return_sequence = True
         self.dmx = DeMixing(size=self.specs['n_latent'], nonlin=tf.identity,
                             axis=3, specs=self.specs)
@@ -1077,7 +1194,7 @@ class LFLSTM(BaseModel):
         else:
             self.fin_fc = FullyConnected(size=self.out_dim, nonlin=tf.identity,
                                 specs=self.specs)
-            
+
         y_pred = self.fin_fc(self.lstm_out)
         print("fin fc out:", y_pred.shape)
         return y_pred
@@ -1118,7 +1235,7 @@ class Deep4(BaseModel):
 
     def build_graph(self):
         self.scope = 'deep4'
-        
+
         inputs = tf.keras.ops.transpose(self.inputs,[0,3,2,1])
 
         tconv1 = DepthwiseConv2D(
@@ -1289,7 +1406,7 @@ class EEGNet(BaseModel):
         meta.model_specs.setdefault('nonlin', 'elu')
         meta.model_specs['scope'] = self.scope
         super(EEGNet, self).__init__(meta, dataset, specs_prefix)
-        
+
 
     def build_graph(self):
 
@@ -1333,13 +1450,155 @@ class EEGNet(BaseModel):
 
         return y_pred
 
+# class SourceNet(BaseModel):
+#     """
 
+#     """
+#     def __init__(self, meta, dataset=None, specs_prefix=False):
+#         self.scope = 'SourceNet'
+#         meta.model_specs.setdefault('unitnorm_scope', [])
+#         meta.model_specs.setdefault('filter_length', 10)
+#         meta.model_specs.setdefault('n_latent', 25)
+#         meta.model_specs.setdefault('pooling', 3)
+#         meta.model_specs.setdefault('stride', 3)
+#         meta.model_specs.setdefault('pool_type', 'max')
+#         meta.model_specs.setdefault('padding', 'SAME')
+#         meta.model_specs.setdefault('nonlin', tf.nn.elu)
+#         meta.model_specs.setdefault('l1_lambda', 0)
+#         meta.model_specs.setdefault('l2_lambda', 0)
+#         meta.model_specs.setdefault('l1_scope', [])
+#         meta.model_specs.setdefault('l2_scope', [])
+#         meta.model_specs.setdefault('unitnorm_scope', [])
+#         #specs.setdefault('model_path', os.path.join(self.dataset.h_params['path'], 'models'))
+#         super(SourceNet, self).__init__(meta, dataset, specs_prefix)
+
+#     def build_graph(self):
+#         self.scope = 'SourceNet'
+
+#         self.scope = 'deep4'
+
+#         inputs = tf.keras.ops.transpose(self.inputs,[0,3,2,1])
+
+#         tconv1 = DepthwiseConv2D(
+#                         kernel_size=(1, self.specs['filter_length']),
+#                         depth_multiplier = self.specs['n_latent'],
+#                         strides=1,
+#                         padding=self.specs['padding'],
+#                         activation = tf.identity,
+#                         depthwise_initializer="he_uniform",
+#                         bias_initializer=Constant(0.1),
+#                         data_format="channels_last",
+#                         depthwise_regularizer=k_reg.l2(self.specs['l2_lambda'])
+#                         #kernel_constraint="maxnorm"
+#                         )
+#         tconv1_out = tconv1(inputs)
+#         print('tconv1: ', tconv1_out.shape) #should be n_batch, sensors, times, kernels
+
+#         sconv1 = Conv2D(filters=self.specs['n_latent'],
+#                         kernel_size=(self.dataset.h_params['n_ch'], 1),
+#                         strides=1,
+#                         padding=self.specs['padding'],
+#                         activation=self.specs['nonlin'],
+#                         kernel_initializer="he_uniform",
+#                         bias_initializer=Constant(0.1),
+#                         data_format="channels_last",
+#                         #data_format="channels_first",
+#                         kernel_regularizer=k_reg.l2(self.specs['l2_lambda']))
+#         sconv1_out = sconv1(tconv1_out)
+#         print('sconv1:',  sconv1_out.shape)
+
+#         pool1 = TempPooling(pooling=self.specs['pooling'],
+#                                   pool_type="avg",
+#                                   stride=self.specs['stride'],
+#                                   padding='SAME',
+#                                   )(sconv1_out)
+
+#         print('pool1: ', pool1.shape)
+
+#         ############################################################
+
+#         tsconv2 = Conv2D(filters=self.specs['n_latent'],
+#                         kernel_size=(1, self.specs['filter_length']),
+#                         strides=1,
+#                         padding=self.specs['padding'],
+#                         activation=self.specs['nonlin'],
+#                         kernel_initializer="he_uniform",
+#                         bias_initializer=Constant(0.1),
+#                         data_format="channels_last",
+#                         #data_format="channels_first",
+#                         kernel_regularizer=k_reg.l2(self.specs['l2_lambda']))
+
+
+#         tsconv2_out = tsconv2(pool1)
+#         print('tsconv2:',  tsconv2_out.shape)
+
+#         pool2 = TempPooling(pooling=self.specs['pooling'],
+#                                   pool_type="avg",
+#                                   stride=self.specs['stride'],
+#                                   padding='SAME',
+#                                   )(tsconv2_out)
+
+#         print('pool2: ', pool2.shape)
+
+#         dmx1 = DeMixing(size=4, nonlin=tf.identity,
+#                             axis=1, specs=self.specs)(pool2)
+#         print('dmx1: ', dmx1.shape)
+
+#         dmx2 = DeMixing(size=4, nonlin=tf.identity,
+#                             axis=2, specs=self.specs)(dmx1)
+#         print('dmx2: ', dmx2.shape)
+
+#         # dmx1 = DeMixing(size=self.specs['n_latent'], nonlin=tf.identity,
+#         #                     axis=1, specs=self.specs)(pool2)
+#         # print('dmx1: ', dmx1.shape)
+#         ############################################################
+
+#         # tsconv3 = Conv2D(filters=self.specs['n_latent'],
+#         #                 kernel_size=(1, self.specs['filter_length']),
+#         #                 strides=1,
+#         #                 padding=self.specs['padding'],
+#         #                 activation=self.specs['nonlin'],
+#         #                 kernel_initializer="he_uniform",
+#         #                 bias_initializer=Constant(0.1),
+#         #                 data_format="channels_last",
+#         #                 #data_format="channels_first",
+#         #                 kernel_regularizer=k_reg.l2(self.specs['l2_lambda']))
+
+
+#         # tsconv3_out = tsconv3(pool2)
+#         # print('tsconv3:',  tsconv3_out.shape)
+
+#         # pool3 = TempPooling(pooling=self.specs['pooling'],
+#         #                           pool_type="avg",
+#         #                           stride=self.specs['stride'],
+#         #                           padding='SAME',
+#         #                           )(tsconv3_out)
+
+#         #print('pool3: ', pool3.shape)
+
+
+
+
+#         fc_out = FullyConnected(size=self.out_dim, nonlin=tf.identity,
+#                             specs=self.specs)
+#         y_pred = fc_out(dmx2)
+#         return y_pred
+# class SimpleNet(LFCNN):
+#     """
+#         Petrosyan, A., Sinkin, M., Lebedev, M. A., & Ossadtchi, A.  Decoding and interpreting cortical signals with
+#         a compact convolutional neural network, 2021, Journal of Neural Engineering, 2021,
+#         https://doi.org/10.1088/1741-2552/abe20e
+#     """
+#     def __init__(self, Dataset, specs=None):
+#         if specs is None:
+#             specs=dict()
+#         super().__init__(Dataset, specs)
 
 class NoisyTrainer:
     def __init__(self, model, model_path, noise_std=.1, patience=5, min_delta=0.001):
         """
         Initialize the trainer with a model, noise parameters, and early stopping configuration
-        
+
         Args:
             model: Keras model
             noise_std: Standard deviation of Gaussian noise to add to labels
@@ -1352,40 +1611,40 @@ class NoisyTrainer:
         self.loss_fn = tf.keras.losses.MeanSquaredError()
         self.metric = tf.keras.metrics.R2Score()
         self.optimizer = tf.keras.optimizers.Adam()
-        
+
         # Early stopping parameters
         self.patience = patience
         self.min_delta = min_delta
         self.best_val_loss = float('inf')
         self.epochs_without_improvement = 0
-    
-    @tf.function    
+
+    @tf.function
     def add_noise_to_labels(self, labels):
         """Add Gaussian noise to the labels"""
-        noise = tf.random.normal(shape=tf.shape(labels), 
-                               mean=0.0, 
+        noise = tf.random.normal(shape=tf.shape(labels),
+                               mean=0.0,
                                stddev=self.noise_std)
         return labels + noise
-    
+
     @tf.function
     def train_step(self, x, y):
         """Single training step with noisy labels"""
         # Add noise to labels
         noisy_y = self.add_noise_to_labels(y)
-        
+
         with tf.GradientTape() as tape:
             # Forward pass
             predictions = self.model(x, training=True)
             # Calculate loss using noisy labels
             loss = self.loss_fn(noisy_y, predictions)
-            
+
         # Calculate gradients
         gradients = tape.gradient(loss, self.model.trainable_variables)
         # Update weights
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
-        
+
         return loss
-    
+
     @tf.function
     def validation_step(self, x, y):
         """Validation step without noise and training mode"""
@@ -1393,17 +1652,17 @@ class NoisyTrainer:
         val_loss = self.loss_fn(y, predictions)
         metric = self.metric(y, predictions)
         return val_loss, metric
-    
-    def train(self, train_dataset, val_dataset=None, epochs=1000, eval_step=5, 
+
+    def train(self, train_dataset, val_dataset=None, epochs=1000, eval_step=5,
               val_steps=1, restore_best_weights=True):
         """
         Train the model with optional validation and early stopping
-        
+
         Args:
             train_dataset: Training dataset
             val_dataset: Optional validation dataset
             epochs: Maximum number of training epochs
-        
+
         Returns:
             Training history dictionary
         """
@@ -1411,7 +1670,7 @@ class NoisyTrainer:
             'train_loss': [],
             'val_loss': []
         }
-        
+
         if val_dataset is not None:
             val_iter = iter(val_dataset)
         for epoch in range(epochs):
@@ -1423,7 +1682,7 @@ class NoisyTrainer:
                 x_batch, y_batch = next(train_iter)
                 loss = self.train_step(x_batch, y_batch)
                 train_losses.append(float(loss))
-                
+
             if val_dataset is not None:
             #Evalute on validation set
                 val_losses = []
@@ -1433,14 +1692,14 @@ class NoisyTrainer:
                     val_loss, val_metric = self.validation_step(x_val_batch, y_val_batch)
                     val_losses.append(float(val_loss))
                     val_metrics.append(float(val_metric))
-            
+
             #Calculate output
             avg_train_loss = np.mean(train_losses)
             training_history['train_loss'].append(avg_train_loss)
             avg_val_loss = np.mean(val_losses)
             avg_val_metric = np.mean(val_metrics)
             training_history['val_loss'].append(avg_val_loss)
-                
+
             # Early stopping
             if avg_val_loss < self.best_val_loss - self.min_delta:
                 #print("Eval decr")
@@ -1452,7 +1711,7 @@ class NoisyTrainer:
             else:
                 self.epochs_without_improvement += 1
                 #print("Eval no decr")
-            
+
             print(f"Epoch {epoch + 1}: "
                   f"Train Loss = {avg_train_loss:.4f}, "
                   f"Val Loss = {avg_val_loss:.4f}, "
@@ -1465,9 +1724,8 @@ class NoisyTrainer:
                     print("Restoring best weights")
                     self.model.load_weights(self.model_path, skip_mismatch=True)
                 break
-                
-        
+
+
         return training_history
 
 
-        

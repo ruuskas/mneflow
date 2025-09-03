@@ -36,7 +36,7 @@ from .layers import LSTM
 import csv
 import os
 from .data import Dataset
-from .utils import regression_metrics, _onehot
+from .utils import regression_metrics, _onehot, r2_score
 from collections import defaultdict
 
 
@@ -86,10 +86,14 @@ class BaseModel():
             self.dataset = Dataset(meta, **meta.data)
         else:
             print("Provide Dataset or Metadata file")
-            
-        self.input_shape = (self.dataset.h_params['n_seq'],
-                            self.dataset.h_params['n_t'],
-                            self.dataset.h_params['n_ch'])
+        if self.dataset.h_params['channel_subset'] is None:
+            self.input_shape = (self.dataset.h_params['n_seq'],
+                                self.dataset.h_params['n_t'],
+                                self.dataset.h_params['n_ch'])
+        else:
+            self.input_shape = (self.dataset.h_params['n_seq'],
+                                self.dataset.h_params['n_t'],
+                                len(self.dataset.h_params['channel_subset']))
         self.y_shape = self.dataset.y_shape
         self.out_dim = np.prod(self.y_shape)
         self.inputs = layers.Input(shape=(self.input_shape))
@@ -220,7 +224,8 @@ class BaseModel():
     def train(self, n_epochs=10, eval_step=None, min_delta=1e-6,
               early_stopping=3, mode='single_fold', prune_weights=False,
               collect_patterns=False, class_weights=None,
-              noisy_labels=False, noise_std=.1, shapley_order=1, fold=0) :
+              noisy_labels=False, noise_std=.1, shapley_order=1, fold=0, 
+              compute_pvalues=False) :
 
         """
         Train a model
@@ -283,6 +288,7 @@ class BaseModel():
         self.cv_test_losses = []
         self.cv_test_metrics = []
         self.cv_metric_pvalues = []
+        cv_pvals = []
         
         if class_weights:
             multiplier = 1. / min(class_weights.values())
@@ -358,9 +364,17 @@ class BaseModel():
             self.meta.train_params.update({"trained":True})
             
             v_loss, v_metric = self.evaluate(val)
+            print("""Fold: {} Validation performance:\n
+                  Loss: {:.4f}, 
+                  Metric: {:.4f}""".format(jj, v_loss, v_metric))
+                  
             self.cv_losses.append(v_loss)
             self.cv_metrics.append(v_metric)
             
+            if compute_pvalues:
+                cv_pvals.append(self.permutation_p_value(n_perm=1000))
+                print("permutation_p_value : {}".format(cv_pvals[-1]))
+                                
             if mode == 'loso':
                 print("Creating loso test DS")
                 test = self.dataset._build_dataset(test_subj,
@@ -378,6 +392,9 @@ class BaseModel():
             if test:
 
                 t_loss, t_metric = self.evaluate(test)
+                print("""Fold: {} Test set performance:\n
+                      Loss: {:.4f}, 
+                      Metric: {:.4f}""".format(jj, t_loss, t_metric))
                 self.cv_test_losses.append(t_loss)
                 self.cv_test_metrics.append(t_metric)
                 
@@ -414,9 +431,7 @@ class BaseModel():
             else:
                 print("Not shuffling the weights for the last fold")
 
-            print("""Fold: {} Validation performance:\n
-                  Loss: {:.4f}, 
-                  Metric: {:.4f}""".format(jj, v_loss, v_metric))
+            
         
 
         metrics = self.cv_metrics
@@ -431,6 +446,8 @@ class BaseModel():
         if self.dataset.h_params['target_type'] == 'float':
             rms = {k:np.mean(v) for k, v in rmss.items()}
             rms.update({k + '_std':np.std(v) for k, v in rmss.items()})
+            rms['r2_folds'] = rmss['r2']
+            rms['cc_folds'] = rmss['cc']
             print("""Validation set: 
                   Corr : {:.3f} +/- {:.3f}. 
                   R^2: {:.3f} +/- {:.3f}""".format(
@@ -447,7 +464,7 @@ class BaseModel():
                       np.mean(self.cv_losses), np.std(self.cv_losses),
                       np.mean(self.cv_metrics), np.std(self.cv_metrics)))
         
-        if len(self.dataset.h_params['test_paths']) > 0:
+        if len(self.dataset.h_params['test_paths']) > 0 or mode == 'loso':
             print("""\n
               Test Performance: 
               Loss: {:.4f} +/- {:.4f}.
@@ -456,7 +473,8 @@ class BaseModel():
                       np.std(self.cv_test_losses),
                       np.mean(self.cv_test_metrics), 
                       np.std(self.cv_test_metrics)))
-        
+        if compute_pvalues:
+            self.meta.update(results={'cv_pvals':cv_pvals})
         self.meta.train_params.update({"trained":True})
         self.update_log(rms=rms, prefix=mode)
         self.save()
@@ -516,7 +534,7 @@ class BaseModel():
         results['tr_loss'] = tr_loss
 
 
-        if len(self.dataset.h_params['test_paths']) > 0:
+        if len(self.cv_test_losses) > 0:
             t_loss = np.mean(self.cv_test_losses)
             t_metric = np.mean(self.cv_test_metrics)
             if self.dataset.h_params['target_type'] == 'float':
@@ -539,24 +557,42 @@ class BaseModel():
         
         self.meta.update(results=results)
     
-    def permutation_p_value(self, dataset=None, n_perm=1000):
-        perm_losses = []
+    def permutation_p_value(self, dataset=None, n_perm=10000):
+        perm_metrics2 = []
         perm_metrics = []
+        if self.meta.data['target_type'] == 'float':
+            criterion = r2_score
+        else:
+            criterion = tf.keras.metrics.categorical_accuracy
+            
         if not dataset:
             dataset = self.dataset.val
         y_true, y_pred_obs = self.predict(dataset) 
+        y_true -= y_true.mean(0)
+        y_pred_obs -= y_pred_obs.mean(0)
         obs_loss, obs_metric = self.evaluate(dataset)
         n = y_true.shape[0]
         for i in range(n_perm):
             shuffle = np.random.permutation(n)
             y_surrogate = y_true[shuffle, :]
-            perm_losses.append(self.km.loss(y_surrogate, y_pred_obs).numpy())
-            perm_metrics.append(self.km.metrics[-1](y_surrogate, y_pred_obs).numpy())
-        loss_pvalue = np.sum(np.array(perm_losses) < obs_loss)/n_perm
+            #perm_losses.append(self.km.loss(y_surrogate, y_pred_obs).numpy())
+            
+            perm_metrics.append(criterion(y_surrogate, y_pred_obs)[0])
+            perm_metrics2.append(criterion(y_true, y_surrogate)[0])
+            #print(perm_metrics[-1], perm_metrics2[-1])
+        plt.hist(perm_metrics, 100)
+        plt.hist(perm_metrics2, 100)
+        print(min(perm_metrics), max(perm_metrics))
+        print(min(perm_metrics2), max(perm_metrics2))
+        print("criterion, corresponding to p = 0.005 : {:.4f}".format(np.percentile(perm_metrics, 99.5)))
+        print("criterion, corresponding to p2 = 0.005 : {:.4f}".format(np.percentile(perm_metrics2, 99.5)))
+        #loss_pvalue = np.sum(np.array(perm_losses) < obs_loss)/n_perm
         metric_pvalue = np.sum(np.array(perm_metrics) > obs_metric)/n_perm
+        metric_pvalue2 = np.sum(np.array(perm_metrics2) > obs_metric)/n_perm
         #print("Loss p-value={:.4f}".format(loss_pvalue))
         print("Metric p-value={:.4f}".format(metric_pvalue))
-        return metric_pvalue
+        print("Metric p-value2={:.4f}".format(metric_pvalue2))
+        return metric_pvalue, metric_pvalue2
         
     def update_log(self, rms=None, prefix=''):
         """Logs experiment to self.model_path + self.scope + '_log.csv'.
@@ -726,7 +762,7 @@ class VARCNN(BaseModel):
         [1] I. Zubarev, et al., Adaptive neural network classifier for
         decoding MEG signals. Neuroimage. (2019) May 4;197:425-434
     """
-    def __init__(self, meta, dataset=None, specs_prefix=False):
+    def __init__(self, meta, dataset=None, specs=None, specs_prefix=False):
         """
         Parameters
         ----------
@@ -756,6 +792,8 @@ class VARCNN(BaseModel):
         padding : str {'SAME', 'FULL', 'VALID'}
             Convolution padding. Defaults to 'SAME'.}"""
         self.scope = 'varcnn'
+        if specs:
+            meta.update(model_specs=specs)
         meta.model_specs.setdefault('filter_length', 7)
         meta.model_specs.setdefault('n_latent', 32)
         meta.model_specs.setdefault('pooling', 2)
@@ -765,11 +803,11 @@ class VARCNN(BaseModel):
         meta.model_specs.setdefault('nonlin', tf.nn.relu)
         meta.model_specs.setdefault('l1_lambda', 3e-4)
         meta.model_specs.setdefault('l2_lambda', 0)
-        meta.model_specs.setdefault('l1_scope', ['fc', 'demix', 'lf_conv'])
+        meta.model_specs.setdefault('l1_scope', ['fc', 'dmx', 'tconv'])
         meta.model_specs.setdefault('l2_scope', [])
         meta.model_specs.setdefault('unitnorm_scope', [])
         meta.model_specs['scope'] = self.scope
-        super(VARCNN, self).__init__(meta, dataset, specs_prefix)
+        super().__init__(meta, dataset, specs_prefix)
 
     def build_graph(self):
         """Build computational graph using defined placeholder `self.X`
@@ -825,8 +863,10 @@ class FBCSP_ShallowNet(BaseModel):
        visualization.
        Human Brain Mapping , Aug. 2017. Online: http://dx.doi.org/10.1002/hbm.23730
     """
-    def __init__(self, meta, dataset=None, specs_prefix=False):
+    def __init__(self, meta, dataset=None, specs=None, specs_prefix=False):
         self.scope = 'fbcsp-ShallowNet'
+        if specs:
+            meta.update(model_specs=specs)
         meta.model_specs.setdefault('filter_length', 25)
         meta.model_specs.setdefault('n_latent', 40)
         meta.model_specs.setdefault('pooling', 75)
@@ -841,7 +881,7 @@ class FBCSP_ShallowNet(BaseModel):
 
         meta.model_specs.setdefault('unitnorm_scope', [])
         #specs.setdefault('model_path', os.path.join(self.dataset.h_params['path'], 'models'))
-        super(FBCSP_ShallowNet, self).__init__(meta, dataset, specs_prefix)
+        super().__init__(meta, dataset, specs_prefix)
 
     def build_graph(self):
 
@@ -921,7 +961,7 @@ class LFLSTM(BaseModel):
         [1]  I. Zubarev, et al., Adaptive neural network classifier for
         decoding MEG signals. Neuroimage. (2019) May 4;197:425-434
     """
-    def __init__(self, meta, dataset=None, specs_prefix=False):
+    def __init__(self, meta, dataset=None, specs=None, specs_prefix=False):
         """
 
         Parameters
@@ -955,8 +995,9 @@ class LFLSTM(BaseModel):
         stride : int
         Stride of the max pooling layer. Defaults to 1.
         """
-        #self.scope = 'lflstm'
         self.scope = 'lf-cnn-lstm'
+        if specs:
+            meta.update(model_specs=specs)
         meta.model_specs.setdefault('filter_length', 7)
         meta.model_specs.setdefault('n_latent', 32)
         meta.model_specs.setdefault('pooling', 2)
@@ -1055,8 +1096,11 @@ class Deep4(BaseModel):
        visualization.
        Human Brain Mapping , Aug. 2017. Online: http://dx.doi.org/10.1002/hbm.23730
     """
-    def __init__(self, meta, dataset=None, specs_prefix=False):
+    def __init__(self, meta, dataset=None, specs=None, specs_prefix=False):
+
         self.scope = 'deep4'
+        if specs:
+            meta.update(model_specs=specs)
         meta.model_specs.setdefault('filter_length', 10)
         meta.model_specs.setdefault('n_latent', 25)
         meta.model_specs.setdefault('pooling', 3)
@@ -1230,8 +1274,10 @@ class EEGNet(BaseModel):
     [4] Original EEGNet implementation by the authors can be found at
     https://github.com/vlawhern/arl-eegmodels
     """
-    def __init__(self, meta, dataset=None, specs_prefix=False):
+    def __init__(self, meta, dataset=None, specs=None, specs_prefix=False):
         self.scope = 'eegnet8'
+        if specs:
+            meta.update(model_specs=specs)
         meta.model_specs.setdefault('unitnorm_scope', [])
         meta.model_specs.setdefault('filter_length', 64)
         meta.model_specs.setdefault('depth_multiplier', 2)
@@ -1304,7 +1350,7 @@ class NoisyTrainer:
         self.model_path = model_path + '_best.weights.h5'
         self.noise_std = noise_std
         self.loss_fn = tf.keras.losses.MeanSquaredError()
-        self.metric = tf.keras.metrics.MeanAbsoluteError()
+        self.metric = tf.keras.metrics.R2Score()
         self.optimizer = tf.keras.optimizers.Adam()
         
         # Early stopping parameters

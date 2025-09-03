@@ -36,8 +36,11 @@ class Logger(object):
             writer.writerow(param_dict)    
             
 def aligned_mean(topos):
+    if topos.ndim == 2:
+        topos = np.expand_dims(topos, 1)
     n_topos = topos.shape[1]
     topos_aligned = []
+    
     for i in range(n_topos):
         t = topos[:, i, :]
         cc = np.sign(np.corrcoef(t.T)[0, :])
@@ -364,7 +367,8 @@ def produce_tfrecords(inputs,
                       transform_targets=False,
                       scale_y=False,
                       train_batch=50,
-                      test_batch=None
+                      test_batch=None,
+                      n_bins=3
                       ):
 
     """Produce TFRecord files from input, apply (optional) preprocessing.
@@ -588,8 +592,16 @@ def produce_tfrecords(inputs,
                     Y, n_ev, class_ratio, orig_classes = produce_labels(Y)
                     Y = _onehot(Y)
                 else:
-                    class_ratio = dict()
-                    orig_classes = dict()
+                    #TODO: need renaming
+                    #for regression class_ratio - frequency-based resampling
+                    #orig_classes - width-based resampling, and 
+                    bin_edges_freq = np.percentile(Y, np.linspace(20, 80, n_bins))
+                    bin_edges_width = np.linspace(np.min(Y), np.max(Y), n_bins)
+                    
+                    
+                    class_ratio = {bin_: edge for bin_, edge in enumerate(bin_edges_freq)}
+                    
+                    orig_classes = {bin_: edge for bin_, edge in enumerate(bin_edges_width)}
 
 
                 if test_set == 'holdout':
@@ -675,7 +687,8 @@ def produce_tfrecords(inputs,
                              n_ch=n_ch,
                              y_shape=y_shape,
                              class_ratio=class_ratio,
-                             orig_classees=orig_classes,
+                             orig_classes=orig_classes,
+                             n_bins=n_bins,
                              fs=fs,
                              train_batch=train_batch,
                              test_batch=test_batch)

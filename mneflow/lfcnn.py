@@ -22,8 +22,8 @@ from matplotlib import collections
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from time import time
         
-from mneflow.layers import LFTConv, DeMixing, FullyConnected, TempPooling, LFTConvTranspose
-from tensorflow.keras.layers import SeparableConv2D, Conv2D, DepthwiseConv2D
+from mneflow.layers import LFTConv, VARConv, DeMixing, FullyConnected, TempPooling, LFTConvTranspose
+from tensorflow.keras.layers import SeparableConv2D, Conv2D, DepthwiseConv2D, LSTM
 from tensorflow.keras.layers import Flatten, Dropout, BatchNormalization
 from tensorflow.keras.initializers import Constant
 #from tensorflow.keras import regularizers as k_reg, constraints, layers
@@ -95,7 +95,7 @@ class LFCNN(BaseModel):
         meta.model_specs.setdefault('nonlin', tf.nn.relu)
         meta.model_specs.setdefault('l1_lambda', 3e-4)
         meta.model_specs.setdefault('l2_lambda', 0.)
-        meta.model_specs.setdefault('l1_scope', ['fc', 'demix', 'lf_conv'])
+        meta.model_specs.setdefault('l1_scope', ['fc', 'dmx', 'tconv'])
         meta.model_specs.setdefault('l2_scope', [])
         meta.model_specs.setdefault('unitnorm_scope', [])
         meta.model_specs['scope'] = self.scope
@@ -464,6 +464,7 @@ class LFCNN(BaseModel):
 
     def patterns_cov_xx(self, y, weights, activations, dcov):
         """
+        
         X - [i,...,m]
         y - [i,...,j] - used for cov[y]
         w - [k,...,j]
@@ -726,12 +727,16 @@ class LFCNN(BaseModel):
                   FC_DENSE: {}""".format(
                   activations['dmx'].shape,
                   activations['tconv'].shape,
-                  activations['pooled'],
+                  activations['pooled'].shape,
                   activations['fc'].shape))
-
+        
+        pooled_flat = tf.reshape(activations['pooled'], [-1, activations['pooled'].shape[-1]])
+        cov_components = np.cov(tf.transpose(pooled_flat, perm=[1, 0]))
         stop = time() - start
         print("ACTIVATIONS:  {:.2f}s".format(stop))
-
+        
+        
+        
         start = time()
         weights = self.extract_weights()
         spectra = self.compute_spectra(activations=activations)
@@ -795,6 +800,7 @@ class LFCNN(BaseModel):
                                    'fc':ccm_fc, #n_y, n_y
                                    'cov_y_hat':cov_y_hat,
                                    'cov_y': cov_y,
+                                   'cov_components': cov_components,
                                    'psds': spectra['psds']} #n_y, n_y
 
 
@@ -889,6 +895,9 @@ class LFCNN(BaseModel):
         self.cv_patterns['ccms']['cov_y'] = np.zeros([self.y_shape[0],
                                                           self.y_shape[0], 
                                                           n_folds])
+        self.cv_patterns['ccms']['cov_components'] = np.zeros([self.specs['n_latent'],
+                                                               self.specs['n_latent'],  
+                                                               n_folds])
         self.cv_patterns['ccms']['cov_dmx'] = np.zeros([self.y_shape[0],
                                                           self.y_shape[0], 
                                                           n_folds])
@@ -960,6 +969,7 @@ class LFCNN(BaseModel):
         self.cv_patterns['ccms']['fc'][:, :, fold] = patterns_struct['ccms']['fc'] # n_logits, n_classes, n_folds
         self.cv_patterns['ccms']['cov_y_hat'][:, :, fold] = patterns_struct['ccms']['cov_y_hat'] # n_classes, n_classes, n_folds
         self.cv_patterns['ccms']['cov_y'][:, :, fold] = patterns_struct['ccms']['cov_y'] # n_classes, n_classes, n_folds
+        self.cv_patterns['ccms']['cov_components'][:, :, fold] = patterns_struct['ccms']['cov_components'] # n_components, n_components, n_folds
         self.cv_patterns['ccms']['psds'][:, :, fold] = patterns_struct['ccms']['psds']
 
     def compute_spectra(self, activations, nfft=128):
@@ -1542,8 +1552,8 @@ class LFCNN(BaseModel):
                                        title='True evoked')
             figname = '-'.join([self.meta.data['path'] + self.scope, self.meta.data['data_id'], 'true', "topos.svg"])
             t.savefig(figname, format='svg', transparent=True)
-            
-class EnvelopNet(LFCNN):
+
+class SourceNet(LFCNN):
     """
         Petrosyan, A., Sinkin, M., Lebedev, M. A., & Ossadtchi, A.  Decoding and interpreting cortical signals with
         a compact convolutional neural network, 2021, Journal of Neural Engineering, 2021,
@@ -1553,11 +1563,77 @@ class EnvelopNet(LFCNN):
         if specs is None:
             specs=dict()
         super().__init__(meta, dataset, specs_prefix)
-        self.scope = 'envelopnet_tpool'
+        self.scope = 'sourceNet'
         
 
     def build_graph(self):
-        self.dmx = DeMixing(size=self.specs['n_latent'], nonlin=tf.identity,
+        self.tconv = LFTConv(
+            size=self.specs['n_latent'],
+            nonlin=self.specs['nonlin'],
+            filter_length=self.specs['filter_length'],
+            padding=self.specs['padding'],
+            specs=self.specs)
+        
+        self.tconv_out = self.tconv(self.inputs)
+        
+        self.dmx = DeMixing(size=self.specs['n_latent'], 
+                            nonlin=tf.keras.activations.linear,
+                            axis=3, specs=self.specs)
+        self.dmx_out = self.dmx(self.tconv_out)
+
+        
+        self.tpool = TempPooling(pooling=self.specs['pooling'],
+                                 pool_type=self.specs['pool_type'],
+                                 stride=self.specs['stride'],
+                                 padding='SAME'
+                                 )
+        
+        self.tpooled = self.tpool(self.dmx_out)
+
+
+
+        self.dropout = Dropout(self.specs['dropout'], noise_shape=None)(self.tpooled)
+        
+        self.fin_fc = FullyConnected(size=self.out_dim, 
+                                     nonlin=tf.keras.activations.linear,
+                                     specs=self.specs)
+
+        self.y_pred = self.fin_fc(self.dropout)
+
+        return self.y_pred
+
+            
+class EnvelopNet(LFCNN):
+    """
+        Petrosyan, A., Sinkin, M., Lebedev, M. A., & Ossadtchi, A.  Decoding and interpreting cortical signals with
+        a compact convolutional neural network, 2021, Journal of Neural Engineering, 2021,
+        https://doi.org/10.1088/1741-2552/abe20e
+    """
+    def __init__(self, meta, dataset=None, specs=None, specs_prefix=False):
+        if specs:
+            meta.update(model_specs=specs)
+        #specs = meta.model_specs
+        meta.model_specs.setdefault('filter_length', 7)
+        meta.model_specs.setdefault('n_latent', 32)
+        meta.model_specs.setdefault('pooling', 2)
+        meta.model_specs.setdefault('stride', 2)
+        meta.model_specs.setdefault('padding', 'SAME')
+        meta.model_specs.setdefault('pool_type', 'max')
+        meta.model_specs.setdefault('nonlin', tf.nn.relu)
+        meta.model_specs.setdefault('l1_lambda', 3e-4)
+        meta.model_specs.setdefault('l2_lambda', 0.)
+        meta.model_specs.setdefault('l1_scope', ['fc', 'dmx', 'tconv'])
+        meta.model_specs.setdefault('l2_scope', [])
+        meta.model_specs.setdefault('unitnorm_scope', [])
+        super().__init__(meta, dataset, specs_prefix)
+        self.scope = 'envelopnet_ll'
+        meta.model_specs['scope'] = self.scope
+        self.specs = meta.model_specs
+        
+
+    def build_graph(self):
+        self.dmx = DeMixing(size=self.specs['n_latent'], 
+                            nonlin=tf.keras.activations.linear,
                             axis=3, specs=self.specs)
         self.dmx_out = self.dmx(self.inputs)
 
@@ -1569,9 +1645,9 @@ class EnvelopNet(LFCNN):
             specs=self.specs)
         
         self.tconv_out = self.tconv(self.dmx_out)
-        self.tpool = TempPooling(pooling=self.specs['filter_length']//2,
+        self.tpool = TempPooling(pooling=1,#self.specs['filter_length']//2,
                                  pool_type=self.specs['pool_type'],
-                                 stride=self.specs['filter_length']//2,
+                                 stride=1,#self.specs['filter_length']//2,
                                  padding='SAME'
                                  )
         
@@ -1595,8 +1671,16 @@ class EnvelopNet(LFCNN):
 
         self.dropout = Dropout(self.specs['dropout'], noise_shape=None)(self.pooled)
 
-        self.fin_fc = FullyConnected(size=self.out_dim, nonlin=tf.identity,
-                            specs=self.specs)
+        # self.fc1 = FullyConnected(size=self.specs['n_latent'], 
+        #                           nonlin=tf.keras.activations.tanh,
+        #                           specs=self.specs)
+        # fc1 = self.fc1(self.dropout)
+        
+        # dropout2 = Dropout(self.specs['dropout'], noise_shape=None)(fc1)
+        
+        self.fin_fc = FullyConnected(size=self.out_dim, 
+                                     nonlin=tf.keras.activations.linear,
+                                     specs=self.specs)
 
         self.y_pred = self.fin_fc(self.dropout)
 
@@ -1835,3 +1919,135 @@ class EnvelopNet(LFCNN):
     #     )
 
     #     return fig
+
+class WFNet(LFCNN):
+    """LF-CNN. Includes basic parameter interpretation options.
+
+    For details see [1].
+    References
+    ----------
+        [1] I. Zubarev, et al., Adaptive neural network classifier for
+        decoding MEG signals. Neuroimage. (2019) May 4;197:425-434
+    """
+    def __init__(self, meta, dataset=None, specs=None, specs_prefix=False):
+        """
+
+        Parameters
+        ----------
+        Dataset : mneflow.Dataset
+
+        specs : dict
+                dictionary of model hyperparameters {
+
+        n_latent : int
+            Number of latent components.
+            Defaults to 32.
+
+        nonlin : callable
+            Activation function of the temporal convolution layer.
+            Defaults to tf.nn.relu
+
+        filter_length : int
+            Length of spatio-temporal kernels in the temporal
+            convolution layer. Defaults to 7.
+
+        pooling : int
+            Pooling factor of the max pooling layer. Defaults to 2
+
+        pool_type : str {'avg', 'max'}
+            Type of pooling operation. Defaults to 'max'.
+
+        padding : str {'SAME', 'FULL', 'VALID'}
+            Convolution padding. Defaults to 'SAME'.}
+
+        stride : int
+        Stride of the max pooling layer. Defaults to 2.
+
+        """
+        self.scope = 'lfcnnr'
+        self.nfft = 128
+        if specs:
+            meta.update(model_specs=specs)
+        #specs = meta.model_specs
+        meta.model_specs.setdefault('filter_length', 16)
+        meta.model_specs.setdefault('n_latent', 32)
+        meta.model_specs.setdefault('pooling', 2)
+        meta.model_specs.setdefault('stride', 2)
+        meta.model_specs.setdefault('padding', 'SAME')
+        meta.model_specs.setdefault('pool_type', 'max')
+        meta.model_specs.setdefault('nonlin', tf.nn.relu)
+        meta.model_specs.setdefault('l1_lambda', 3e-4)
+        meta.model_specs.setdefault('l2_lambda', 0.)
+        meta.model_specs.setdefault('l1_scope', ['fc', 'dmx', 'tconv'])
+        meta.model_specs.setdefault('l2_scope', [])
+        meta.model_specs.setdefault('unitnorm_scope', [])
+        meta.model_specs['scope'] = self.scope
+        #specs.setdefault('model_path',  self.dataset.h_params['save_path'])
+        super(WFNet, self).__init__(meta, dataset, specs_prefix)
+        #super().__init__(meta)
+
+
+    def build_graph(self):
+        """Build computational graph using defined placeholder `self.X`
+        as input.
+
+        Returns
+        --------
+        y_pred : tf.Tensor
+            Output of the forward pass of the computational graph.
+            Prediction of the target variable.
+        """
+        #Apply n_latent temporal convolution kernels
+        self.scope = 'wfnet'
+        
+        #inputs = tf.keras.ops.transpose(self.inputs,[0,3,2,1])
+        
+        # self.dmx = DeMixing(size=self.specs['n_latent'], 
+        #                     nonlin=tf.keras.activations.linear,
+        #                     axis=3, specs=self.specs)
+        
+        # self.dmx_out = self.dmx(self.inputs)
+        self.tconv = LFTConv(
+            size=self.specs['n_latent'],
+            nonlin=self.specs['nonlin'],
+            filter_length=self.specs['filter_length'],
+            padding=self.specs['padding'],
+            specs=self.specs)
+        
+        self.tconv_out = self.tconv(self.inputs)
+        reshaped = tf.keras.layers.Reshape(self.tconv_out.shape[2:])(self.tconv_out)
+        print("LSTM input: {}".format(reshaped.shape))
+        self.lstm = LSTM(units=self.specs['n_latent'], activation='tanh', 
+                            input_shape=reshaped.shape[1:],
+                            recurrent_activation='sigmoid',
+                            use_bias=True,
+                            kernel_initializer='glorot_uniform',
+                            recurrent_initializer='orthogonal',
+                            bias_initializer='zeros',
+                            unit_forget_bias=True,
+                            kernel_regularizer=None,
+                            recurrent_regularizer=None,
+                            bias_regularizer=None,
+                            activity_regularizer=None,
+                            kernel_constraint=None,
+                            recurrent_constraint=None,
+                            bias_constraint=None,
+                            dropout=self.specs['dropout'],
+                            recurrent_dropout=self.specs['dropout'],
+                            seed=None,
+                            return_sequences=False,
+                            return_state=False,
+                            go_backwards=False,
+                            stateful=False,
+                            unroll=False,
+                            use_cudnn='auto',
+                            )
+
+        lstm_state = self.lstm(reshaped)        
+        print("LSTM output: {}".format(lstm_state.shape))
+        fc_out = FullyConnected(size=self.out_dim, nonlin=tf.keras.activations.linear,
+                            specs=self.specs)
+        
+        self.y_pred = fc_out(lstm_state)
+        
+        return self.y_pred

@@ -103,8 +103,7 @@ class Dataset(object):
 
         dataset = dataset.map(self._parse_function)
 
-        if self.h_params['channel_subset'] is not None:
-            dataset = dataset.map(self._select_channels)
+        
 
         if np.any(self.h_params['class_subset']) and self.h_params['target_type'] == 'int':
             dataset = dataset.filter(self._select_classes)
@@ -181,9 +180,19 @@ class Dataset(object):
             self.validation_batch = test_batch
             self.training_batch = train_batch
 
-            val_dataset = val_dataset.shuffle(5).batch(test_batch).repeat()
+            val_dataset = val_dataset.shuffle(5).batch(test_batch)#.repeat()
             val_dataset.batch_size = test_batch
-            train_dataset = train_dataset.shuffle(5).batch(train_batch).repeat()
+            train_dataset = train_dataset.shuffle(5).batch(train_batch)#.repeat()
+            
+            val_dataset = val_dataset.repeat()
+            train_dataset = train_dataset.repeat()
+            
+            if self.h_params['channel_subset'] is not None:
+                val_dataset = val_dataset.map(self._select_channels)
+                train_dataset = train_dataset.map(self._select_channels)
+                #self.h_params['n_ch'] = len(self.h_params['channel_subset'])
+            
+
 
             train_dataset = train_dataset.map(self._unpack)
             val_dataset = val_dataset.map(self._unpack)
@@ -206,8 +215,11 @@ class Dataset(object):
                 dataset = dataset.shuffle(5).batch(test_batch)
             else:
                 dataset = dataset.shuffle(5).batch(test_batch)#.repeat()
-
-
+            
+            if self.h_params['channel_subset'] is not None:
+                dataset = dataset.map(self._select_channels)
+                
+                
 
             #dataset = dataset.shuffle(5).batch(test_batch)#.repeat()
             dataset.batch = test_batch
@@ -245,6 +257,7 @@ class Dataset(object):
 
     def _select_channels(self, example_proto):
         """Pick a subset of channels specified by self.channel_subset."""
+    
         example_proto['X'] = tf.gather(example_proto['X'],
                                         tf.constant(self.h_params['channel_subset']),
                                         axis=3)
@@ -352,18 +365,45 @@ class Dataset(object):
     def _unpack(self, sample):
         return sample['X'], sample['y']#, sample['n']
 
-
+    def assign_bin(self, sample):
+        # Assign each sample to a bin
+        
+        bin_id = tf.searchsorted(self.h_params['bins'],
+                                 sample['y'], side='left')
+        bin_id = tf.clip_by_value(bin_id, 0, self.h_params['n_bins'] - 1)[0]
+        return bin_id
 
     def _resample(self, dataset):
         #print("Oversampling")
-
         n_classes = len(self.h_params['class_ratio'].items())
-        #print(n_classes)
         target_dist = 1./n_classes*np.ones(n_classes)
         empirical_dist = [v for k, v in self.h_params['class_ratio'].items()]
-        resample_ds = dataset.rejection_resample(class_func,
-                                                 target_dist=target_dist,
-                                                 initial_dist=empirical_dist)
+        print(self.h_params['class_ratio'], n_classes)
+        
+        if self.h_params['target_type'] == 'int':
+            #Classification case
+            resample_ds = dataset.rejection_resample(class_func,
+                                                     target_dist=target_dist,
+                                                     initial_dist=empirical_dist)    
+            
+        elif self.h_params['target_type'] == 'float':
+            #using width-based resampling
+            #self.h_params['bins'] = np.array(list(self.h_params['orig_classees'].values())).astype(np.float32)[1:-1]
+            #self.h_params['n_bins'] = 
+            #using percentile-based resampling
+            
+            self.h_params['bins'] = np.array(list(self.h_params['class_ratio'].values())).astype(np.float32)
+            target_dist = 1./len(self.h_params['bins'])*np.ones(len(self.h_params['bins']))
+            print('n_bins {}, len(bins): {}'.format(self.h_params['n_bins'], 
+                                                    len(self.h_params['bins'])))
+            
+            resample_ds = dataset.rejection_resample(self.assign_bin,
+                                                     target_dist=target_dist,
+                                                     #initial_dist=empirical_dist
+                                                     )
+            
+        
+        
         balanced_ds = resample_ds.map(lambda y, xy: xy)
         new_dist = {k: target_dist[0]
                     for k in self.h_params['class_ratio'].keys()}
@@ -373,6 +413,10 @@ class Dataset(object):
 
 def class_func(sample):
     return tf.argmax(sample['y'], -1)
+
+    
+    
+    
 # def _onehot(y, n_classes=False):
 #     if not n_classes:
 #         """Create one-hot encoded labels."""

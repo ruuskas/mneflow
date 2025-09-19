@@ -71,6 +71,8 @@ class Dataset(object):
             self.h_params['class_subset'] = class_subset
         if decim or not 'decim' in self.h_params.keys():
             self.h_params['decim'] = decim
+        if crop or not 'crop' in self.h_params.keys():
+            self.h_params['crop'] = crop
         if train_batch or not 'train_batch' in self.h_params.keys():
             self.h_params['train_batch'] = train_batch
         if rebalance_classes or not 'rebalance_classes' in self.h_params.keys():

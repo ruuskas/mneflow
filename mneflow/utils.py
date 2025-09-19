@@ -114,7 +114,7 @@ def load_meta(path, data_id=''):
 
 
 
-def scale_to_baseline(X, baseline=None, crop_baseline=False):
+def scale_to_baseline(X, baseline=None):
     """Perform global scaling based on a specified baseline.
 
     Subtracts the mean of each channel and divides by the standard deviation of
@@ -129,9 +129,6 @@ def scale_to_baseline(X, baseline=None, crop_baseline=False):
         Baseline definition (in samples). If baseline is set to None (default)
         the whole epoch is used for scaling.
 
-    crop_baseline : bool
-        Whether to crop the baseline after scaling is applied. Only used if
-        baseline is specified.
     Returns
     -------
     X : ndarray
@@ -151,9 +148,9 @@ def scale_to_baseline(X, baseline=None, crop_baseline=False):
 
     X -= X0m
     X /= X0sd
-    if crop_baseline and baseline is not None:
-        X = np.delete(X, interval, axis=-1)
-    #print("Scaling Done")
+    # if crop_baseline and baseline is not None:
+    #     X = np.delete(X, interval, axis=-1)
+    # #print("Scaling Done")
     return X
 
 
@@ -356,7 +353,7 @@ def produce_tfrecords(inputs,
                       test_set=False,
                       scale=False,
                       scale_interval=None,
-                      crop_baseline=False,
+                      crop=None,
                       segment=False,
                       aug_stride=None,
                       seq_length=None,
@@ -452,9 +449,8 @@ def produce_tfrecords(inputs,
         If tuple, then baseline is data[tuple[0] : tuple[1]].
         Only used if scale == True.
 
-    crop_baseline : bool, optional
-        Whether to crop baseline specified by 'scale_interval'
-        after scaling. Defaults to False.
+    crop : tuple, optional
+        Indices along the time axis to crop. Can be int or None.
 
     array_keys : dict, optional
         Dictionary mapping {'X':'data_matrix','y':'labels'},
@@ -574,7 +570,7 @@ def produce_tfrecords(inputs,
                         n_folds=n_folds,
                         scale=scale,
                         scale_interval=scale_interval,
-                        crop_baseline=crop_baseline,
+                        crop=crop,
                         segment=segment, aug_stride=aug_stride,
                         seq_length=seq_length,
                         segment_y=segment_y)
@@ -682,7 +678,7 @@ def produce_tfrecords(inputs,
 
             meta_preprocessing = dict(scale=scale,
                                       scale_interval=scale_interval,
-                                      crop_baseline=crop_baseline,
+                                      crop=crop,
                                       segment=segment, aug_stride=aug_stride,
                                       seq_length=seq_length,
                                       segment_y=segment_y)
@@ -937,7 +933,7 @@ def preprocess_realtime(data, decimate=False, picks=None,
 
 def preprocess(data, events, sample_counter,
                input_type='trials', n_folds=5,
-               scale=False, scale_interval=None, crop_baseline=False,
+               scale=False, scale_interval=None, crop=None,
                segment=False, aug_stride=None,
                seq_length=None,
                segment_y=False):
@@ -972,9 +968,8 @@ def preprocess(data, events, sample_counter,
         If tuple, than baseline is data[tuple[0] : tuple[1]].
         Only used if scale == True.
 
-    crop_baseline : bool, optional
-        Whether to crop baseline specified by \'scale_interval\'
-        after scaling (defaults to False).
+    crop : tuple, optional
+        Indices along the time axis to crop. Can be int or None.
 
     segment : bool, int, optional
         If specified, splits the data into smaller segments of specified
@@ -1011,8 +1006,15 @@ def preprocess(data, events, sample_counter,
     # TODO: remove scale_y and transform targets?
 
     if scale:
-        data = scale_to_baseline(data, baseline=scale_interval,
-                                 crop_baseline=crop_baseline)
+        data = scale_to_baseline(data, baseline=scale_interval)
+
+    if crop:
+        if crop[0] == None:
+            crop[0] = 0
+        if crop[1] == None:
+            data = data[:, :, crop[0] : ]
+        else:
+            data = data[:, :, crop[0] : crop[1]]
 
     #define folds
     if input_type  == 'continuous':

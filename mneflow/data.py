@@ -19,7 +19,7 @@ class Dataset(object):
 
     def __init__(self, meta, train_batch=50, test_batch=None, split=True,
                  class_subset=None, pick_channels=None, decim=None,
-                 rebalance_classes=False, **kwargs):
+                 crop=None, rebalance_classes=False, **kwargs):
 
         r"""Initialize tf.data.TFRdatasets.
 
@@ -55,6 +55,9 @@ class Dataset(object):
         decim : int
             Apply decimation in time. Note this feature does not check for
             aliasing effects.
+
+        crop : tuple, optional
+            Indices along the time axis to crop. Can be int or None.
 
         rebalance_classes : bool
             Apply rejection sampling to oversample underrepresented classes.
@@ -126,15 +129,29 @@ class Dataset(object):
 
 
             #print("y_shape:", self.h_params['y_shape'])
+        if self.h_params['crop'] is not None:
+            print('Cropping indinces [{} - {}]').format(self.h_params['crop'][0],
+                                                        self.h_params['crop'][1])
+            self.timepoints = tf.constant(
+                    np.arange(0, self.h_params['n_t']))[self.h_params['crop'][0]:
+                                                        self.h_params['crop'][1]]
+
+            self.h_params['n_t'] = len(self.timepoints)
+            dataset = dataset.map(self._crop)
+
+
+
+
 
         if self.h_params['decim'] is not None:
-            print('decimating')
+            print('Decimating')
 
-            self.timepoints = tf.constant(
+            self.decimated_timepoints = tf.constant(
                     np.arange(0, self.h_params['n_t'], self.h_params['decim']))
 
             self.h_params['n_t'] = len(self.timepoints)
             dataset = dataset.map(self._decimate)
+
 
         #TODO: test set case
 
@@ -265,6 +282,12 @@ class Dataset(object):
 
     def _decimate(self, example_proto):
         """Downsample data."""
+        example_proto['X'] = tf.gather(example_proto['X'],
+                                        self.decimated_timepoints,
+                                        axis=2)
+
+    def _crop(self, example_proto):
+        """Crop data on the time axis."""
         example_proto['X'] = tf.gather(example_proto['X'],
                                         self.timepoints,
                                         axis=2)

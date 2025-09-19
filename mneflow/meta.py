@@ -89,6 +89,11 @@ class MetaData():
         self.results = dict()
         self.weights = dict()
         
+    
+    def copy(self):
+        
+        return
+        
     def save(self, verbose=True):
         """Saves the metadata to self.data['path'] + self.data['data_id']"""
         if 'path' in self.data.keys() and 'data_id' in self.data.keys():
@@ -291,7 +296,9 @@ class MetaData():
         if n_y == 1:
             #Put back the 'label' dimension
             #print(F.shape)
-            F = F[:, np.newaxis, :]
+            F = np.expand_dims(F, 1 )#[:, np.newaxis, :]
+        if F.ndim == 2:
+            F = np.expand_dims(F, -1 )#[:, np.newaxis, :]
             
         
             
@@ -734,6 +741,8 @@ class MetaData():
             
         return patterns
     
+    #def plot_parcels(self, brain, method='weight'):
+    
     def get_timecourse(self, method='weight'):
         
         # if average_over == 'folds':
@@ -832,13 +841,14 @@ class MetaData():
                                       Viable options are 'weight', 'output_corr',
                                       and 'compwise_loss'""".format(method))
         
-        return class_psds, out, class_psds
+        return class_psds, out, freq_responses
         
     
     def plot_spectra(self, method='weight', 
                      class_subset=None, 
-                     log=True, 
-                     freqs_lim=None):
+                     log=True,
+                     fs=None,
+                     freqs_lim=(1, 70)):
         #TODO: class names
         #def plot_spectra(self, patterns_struct, component_ind, ax, fs=None, loag=False):
         """Relative power spectra of a given latent componende before and after
@@ -878,12 +888,12 @@ class MetaData():
         
         if freqs_lim:
             #ax[i].set_xlim(freqs_lim[0], freqs_lim[1])
-            vmin = np.min(psds[freqs_lim[0] : freqs_lim[1], :])
-            vmax = np.max(h[freqs_lim[0] : freqs_lim[1], :])
+            vmin = .9*np.min(h[freqs_lim[0] : freqs_lim[1], :])
+            vmax = 1.1*np.max(psds[freqs_lim[0] : freqs_lim[1], :])
             
         else:
-            vmin = np.min(psds)
-            vmax = np.max(h)
+            vmin = 0.9*np.min(h)
+            vmax = 1.1*np.max(psds)
         #print(vmin, vmax)
             
         f, ax = plt.subplots(1, n_y, sharey=True, figsize=(3*n_y, 4))
@@ -898,7 +908,8 @@ class MetaData():
                                        freq_responses[:, i].mean(-1),
                                        log=log, freqs_lim=freqs_lim, 
                                        vlim = (vmin, vmax), ax=ax[i],
-                                       h_std=h_std, inp_std=inp_std)
+                                       #h_std=h_std, inp_std=inp_std
+                                       )
             
                
         if i == n_y - 1:
@@ -917,16 +928,16 @@ class MetaData():
             f = plt.figure()
             ax = f.gca()
         
-        if vlim:
-            vmin = vlim[0]
-            vmax = vlim[1]
-        elif freqs_lim:
-            #ax[i].set_xlim(freqs_lim[0], freqs_lim[1])
-            vmin = np.min(psd[freqs_lim[0] : freqs_lim[1]])
-            vmax = np.max(h[freqs_lim[0] : freqs_lim[1]])
-        else:
-            vmin = np.min(psd)
-            vmax = np.max(h)
+        # if vlim:
+        #     vmin = vlim[0]
+        #     vmax = vlim[1]
+        # elif freqs_lim:
+        #     #ax[i].set_xlim(freqs_lim[0], freqs_lim[1])
+        #     vmin = np.min(psd[freqs_lim[0] : freqs_lim[1]])
+        #     vmax = np.max(h[freqs_lim[0] : freqs_lim[1]])
+        # else:
+        #     vmin = np.min(psd)
+        #     vmax = np.max(h)
             
         if log:
             ax.semilogy(self.patterns['freqs'], psd,
@@ -939,6 +950,8 @@ class MetaData():
             #vmin = np.log(vmin)
             #vmax = np.log(vmax)
         else:
+            psd /= np.sum(psd)
+            h /= np.sum(h)
             ax.plot(self.patterns['freqs'], 
                        psd,
                        label='Filter input RPS')
@@ -948,8 +961,8 @@ class MetaData():
                        color='tab:orange')
             if np.any(h_std):
                 ax.fill_between(self.patterns['freqs'], 
-                                    h / np.sum(h) + h_std, 
-                                    h / np.sum(h) - h_std, 
+                                    h + h_std, 
+                                    h - h_std, 
                                     label='fold variation', color='tab:orange', 
                                     alpha=.25)
             if np.any(inp_std):
@@ -959,13 +972,13 @@ class MetaData():
                                     label='fold variation', color='tab:blue', 
                                     alpha=.25)
                 
-            ax.plot(self.patterns['freqs'], freq_response,
+            ax.plot(self.patterns['freqs'], freq_response / np.sum(freq_response),
                             label='Freq response', 
                             color='tab:green', linestyle='dotted')
             
-        ax.set_ylim(0.75*vmin, 1.25*vmax)
-        if freqs_lim:
-            ax.set_xlim(freqs_lim[0], freqs_lim[1])
+        # ax.set_ylim(0.75*vmin, 1.25*vmax)
+        # if freqs_lim:
+        #     ax.set_xlim(freqs_lim[0], freqs_lim[1])
         return ax
     
     
@@ -1003,8 +1016,11 @@ class MetaData():
             class_names = ["Class {}".format(i) for i in range(n_classes)]
             
         if average_over == 'folds':
+            sd_waveforms = cc_waveforms.std(-1) / np.sqrt(cc_waveforms.shape[-1])
+            sd_activations = cc_activations.std(-1) / np.sqrt(cc_waveforms.shape[-1])
             cc_waveforms = cc_waveforms.mean(-1)
             cc_activations = cc_activations.mean(-1)
+            
             h_std = h.std(-1)
             psds_std = psds.std(-1)
             psds = psds.mean(-1)
@@ -1046,6 +1062,9 @@ class MetaData():
             #                                       method='iir',
             #                                       verbose=False)
             ax[i, 0].plot(times, cc_waveforms[..., i], alpha=.75, color='tab:blue')
+            ax[i, 0].fill_between(times, 
+                                  cc_waveforms[..., i] - sd_waveforms[..., i], 
+                                  cc_waveforms[..., i] + sd_waveforms[..., i], alpha=.25, color='tab:blue')
             ax[i, 0].plot(times, cc_activations[..., i], alpha=.75, color='tab:orange')
                  
             # ax[i, 0].pcolor(times[::self.model_specs['stride']], np.arange(0, 2), 

@@ -5,6 +5,7 @@ Specifies utility functions.
 @author: Ivan Zubarev, ivan.zubarev@aalto.fi
 """
 import os
+from pathlib import Path
 import pickle
 import warnings
 import numpy as np
@@ -503,7 +504,9 @@ def load_meta(path, data_id=''):
         Metadata file
 
     """
-    with open(path+data_id+'_meta.pkl', 'rb') as f:
+    if not isinstance(path, Path):
+        path = Path(path)
+    with open(path / data_id / '_meta.pkl', 'rb') as f:
         meta = pickle.load(f)
     return meta
 
@@ -1084,9 +1087,11 @@ def produce_tfrecords(inputs,
                                       segment_y=segment_y)
             
             meta = MetaData()
-            meta.update(data=meta_data, preprocessing=meta_preprocessing)       
-            
-            with open(path+data_id+'_meta.pkl', 'wb') as f:
+            meta.update(data=meta_data, preprocessing=meta_preprocessing)
+
+            if not isinstance(path, Path):
+                path = Path(path)
+            with open(path / data_id / '_meta.pkl', 'wb') as f:
                 pickle.dump(meta, f)
 
     elif os.path.exists(meta_fname):

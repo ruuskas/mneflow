@@ -106,7 +106,7 @@ def load_meta(path, data_id=''):
         Metadata file
 
     """
-    with open(path+data_id+'_meta.pkl', 'rb') as f:
+    with open(os.path.join(path, data_id+'_meta.pkl'), 'rb') as f:
         meta = pickle.load(f)
     return meta
 
@@ -699,7 +699,7 @@ def produce_tfrecords(inputs,
             meta = MetaData()
             meta.update(data=meta_data, preprocessing=meta_preprocessing)
 
-            with open(path+data_id+'_meta.pkl', 'wb') as f:
+            with open(os.path.join(path, data_id+'_meta.pkl'), 'wb') as f:
                 pickle.dump(meta, f)
 
     elif os.path.exists(meta_fname):

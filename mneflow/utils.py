@@ -506,7 +506,7 @@ def load_meta(path, data_id=''):
     """
     if not isinstance(path, Path):
         path = Path(path)
-    with open(path / data_id / '_meta.pkl', 'rb') as f:
+    with open(path / data_id + '_meta.pkl', 'rb') as f:
         meta = pickle.load(f)
     return meta
 
@@ -1091,7 +1091,7 @@ def produce_tfrecords(inputs,
 
             if not isinstance(path, Path):
                 path = Path(path)
-            with open(path / data_id / '_meta.pkl', 'wb') as f:
+            with open(path / data_id + '_meta.pkl', 'wb') as f:
                 pickle.dump(meta, f)
 
     elif os.path.exists(meta_fname):

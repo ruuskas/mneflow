@@ -55,6 +55,13 @@ Functional connectivity models:
   ``covs``, ``corr_to_output``) through the model's layers. It skipped the
   batch normalization and attention before the pointwise layer.
 
+Training:
+
+* ``train`` resets the optimizer between folds (``mode='cv'`` or
+  ``'loso'``) to its state after ``build``. Each fold used to start from the
+  previous fold's iteration count and moments (e.g. Adam's): reloading the
+  initial weights doesn't restore the optimizer.
+
 Evaluation:
 
 * Test sets are no longer shuffled, so test predictions are in the order of

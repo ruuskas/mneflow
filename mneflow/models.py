@@ -220,6 +220,11 @@ class BaseModel():
                                                    self.specs_prefix,
                                                    '_init.weights.h5'])))
 
+        # Build the optimizer's variables now and keep their initial
+        # values, which train() restores between folds (_reset_optimizer)
+        self.km.optimizer.build(self.km.trainable_variables)
+        self._optimizer_init = {v.path: v.numpy()
+                                for v in self.km.optimizer.variables}
 
         print('Input shape:', self.input_shape)
         print('y_pred:', self.y_pred.shape)
@@ -506,6 +511,11 @@ class BaseModel():
                                                            '_init.weights.h5'])),
                                      skip_mismatch=True)
                 self.shuffle_weights()
+                # load_weights doesn't restore the optimizer (it is built
+                # only after the initial weights are saved), so without
+                # this the next fold would start from this fold's
+                # iteration count and moments
+                self._reset_optimizer()
 
 
             else:
@@ -608,6 +618,29 @@ class BaseModel():
         weights = self.km.get_weights()
         weights = [np.random.permutation(w.flat).reshape(w.shape) for w in weights]
         self.km.set_weights(weights)
+
+    def _reset_optimizer(self):
+        """Restore the optimizer's state after :meth:`build`.
+
+        Resets every optimizer variable (the iteration count, the
+        learning rate, and slot variables such as Adam's moments) to its
+        value after :meth:`build`, so that each cross-validation fold
+        trains with a fresh optimizer.
+
+        Raises
+        ------
+        RuntimeError
+            If the optimizer's variables differ from those after
+            :meth:`build` (e.g. the model was compiled again).
+
+        """
+        variables = self.km.optimizer.variables
+        init = getattr(self, '_optimizer_init', {})
+        if sorted(v.path for v in variables) != sorted(init):
+            raise RuntimeError("The optimizer's variables changed after "
+                               "build(); call build() again to reset it.")
+        for v in variables:
+            v.assign(init[v.path])
 
 
     def plot_hist(self):

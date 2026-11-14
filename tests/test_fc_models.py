@@ -625,3 +625,34 @@ def test_effective_pointwise_weights_are_those_of_the_squaresum_output(
                                    atol=1e-4)
         n_fitted += 1
     assert n_fitted > 0
+
+
+def test_each_cv_fold_starts_with_a_fresh_optimizer(tfr_path, monkeypatch):
+    """Each CV fold trains from a fresh optimizer: iteration 0, zero Adam
+    moments, the initial learning rate (they used to carry over from the
+    previous fold)."""
+    model = make_model(tfr_path, 'symmetric', model_id='fresh_optimizer')
+    opt = model.km.optimizer
+    fit = model.km.fit
+    starts, ends = [], []
+
+    def state():
+        return {v.path: np.array(v.numpy()) for v in opt.variables}
+
+    def recording_fit(*args, **kwargs):
+        starts.append(state())
+        history = fit(*args, **kwargs)
+        ends.append(state())
+        return history
+
+    monkeypatch.setattr(model.km, 'fit', recording_fit)
+    train_cv(model)
+    assert len(starts) == N_FOLDS
+    for start, end in zip(starts, ends):
+        for path, value in start.items():
+            if path.endswith('learning_rate'):
+                np.testing.assert_allclose(value, 1e-2)
+            else:
+                # iteration count and moments
+                assert not np.any(value), path
+        assert end[opt.iterations.path] > 0

@@ -1146,13 +1146,15 @@ class SymmetricModel(BaseModel):
                          self.meta.weights['out_w_flat'][ind, :, i])
             fcr = np.reshape(fc1, pointwise_shape[:-1])
 
-            row = np.unravel_index(np.argmax(np.diag(fcr)), fcr.shape)[0]
+            # Row and column of the strongest component pair. (The row
+            # used to come from the argmax of the diagonal, an index 0..n-1
+            # that np.unravel_index mapped to row 0 in every fold.)
+            row, col = np.unravel_index(np.argmax(fcr), fcr.shape)
 
             max_freq_row = np.argmax(freq_weights(row, i))
             spatial_kernel_row = self.meta.weights['ssum1'][max_freq_row, :, row, i]
             spatial_pattern_row = np.dot(self.cv_patterns['dcov'][:, :, max_freq_row, i], spatial_kernel_row.T)
 
-            col = np.unravel_index(np.argmax(fcr), fcr.shape)[1]
 
             max_freq_col = np.argmax(freq_weights(col, i))
             spatial_kernel_col = self.meta.weights['ssum1'][max_freq_col, :, col, i]

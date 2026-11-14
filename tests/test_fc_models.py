@@ -455,3 +455,24 @@ def test_ablation_model_trains_on_parcel_subset(tfr_path):
         np.testing.assert_allclose(np.ravel(fold['y_true']), y[test_fold],
                                    rtol=1e-5)
 
+
+
+def test_row_and_col_components_are_the_strongest_weight(tfr_path):
+    """'row' and 'col' are the row and column of the largest entry of the
+    component-by-component output weight matrix of each fold (the row index
+    used to be always 0)."""
+    model = make_model(tfr_path, 'symmetric', model_id='rowcol_test')
+    train_cv(model)
+    weights = model.meta.weights
+    n_comp = model.cv_patterns['ccms']['pointwise'].shape[0]
+    # One output unit (index 0) whose only weight is the component pair
+    # (n_comp - 1, 1)
+    weights['out_w_flat'][:] = 0
+    weights['out_w_flat'][0, :, :] = 1
+    weights['fc1_w_flat'][:] = 0
+    weights['fc1_w_flat'][(n_comp - 1) * n_comp + 1, 0, :] = 1
+    patterns = _quiet(model.extract_patterns)
+    np.testing.assert_array_equal(patterns['comp_inds']['row'],
+                                  [n_comp - 1] * N_FOLDS)
+    np.testing.assert_array_equal(patterns['comp_inds']['col'],
+                                  [1] * N_FOLDS)

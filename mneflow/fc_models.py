@@ -943,7 +943,10 @@ class SymmetricModel(BaseModel):
         dataset = Dataset(meta_abl, train_batch=hyperparameters['batch_size'],
                                        sample_subset=label_inds)
         meta_abl.update(model_specs=self.meta.model_specs)
+        # The weights and patterns of this model don't belong to the
+        # ablation model (and the patterns are large)
         meta_abl.weights = {}
+        meta_abl.patterns = {}
 
         model_abl = SymmetricModel(meta=meta_abl,
                                    dataset=dataset,

@@ -306,12 +306,8 @@ class Dataset(object):
 
         if 'sample_subset' in self.h_params.keys() and self.h_params['sample_subset'] is not None:
 
-            batch_range = np.arange(train_batch)
-            self.sample_subset = np.stack(np.meshgrid(batch_range,
-                                                      self.h_params['sample_subset'],
-                                                      self.h_params['sample_subset'],
-                                                      indexing='ij'),
-                                                      axis=-1)
+            self.sample_subset = np.asarray(self.h_params['sample_subset'],
+                                            dtype=np.int64)
 
             print('Picking {} sample points {}'.format(len(self.h_params['sample_subset']),
                                                     self.h_params['sample_subset']))
@@ -465,9 +461,11 @@ class Dataset(object):
             the gathered sample subset.
 
         """
-        example_proto['X'] = tf.gather_nd(example_proto['X'],
-                                        indices=tf.constant(self.sample_subset)
-                                            )
+        # Rows and columns of each sample (axes 1 and 2 of the batch), for
+        # any batch size (also the last, partial batch)
+        inds = tf.constant(self.sample_subset)
+        example_proto['X'] = tf.gather(tf.gather(example_proto['X'], inds,
+                                                 axis=1), inds, axis=2)
         return example_proto
 
 

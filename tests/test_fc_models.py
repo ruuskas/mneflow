@@ -420,3 +420,38 @@ def test_trainable_pointwise_weights_each_component(tfr_path):
     expected = np.maximum(expected + bias[None, :, None], 0)[..., None]
     got = keras.ops.convert_to_numpy(model._apply_pointwise(x))
     np.testing.assert_allclose(got, expected, rtol=1e-4, atol=1e-5)
+
+
+def test_ablation_model_trains_on_parcel_subset(tfr_path):
+    """ablation_analysis builds a model on a subset of the parcels: its
+    input has the subset's size, the selected entries are X[:, idx][:, :,
+    idx], and it trains in CV and predicts the whole test set even when the
+    batch size does not divide the fold sizes."""
+    model = make_model(tfr_path, 'symmetric', model_id='abl_full')
+    idx = np.array([0, 2, 5])
+    specs = dict(model.meta.model_specs, batch_size=16)
+    meta_abl, model_abl, dataset = _quiet(model.ablation_analysis, 'test',
+                                          idx, specs)
+    assert tuple(model_abl.input_shape) == (len(idx), len(idx), N_FREQS)
+    # This model's weights and patterns are not copied
+    assert meta_abl.weights == {} and meta_abl.patterns == {}
+
+    # The test data are not shuffled: compare the first batch entry by
+    # entry
+    x_full, _ = next(iter(model.dataset.test))
+    x_sub, _ = next(iter(dataset.test))
+    np.testing.assert_allclose(
+        x_sub.numpy(), x_full.numpy()[:, idx][:, :, idx], rtol=1e-6
+    )
+
+    _quiet(model_abl.build, loss='MAE', metrics='RootMeanSquaredError',
+           learn_rate=1e-2)
+    _quiet(model_abl.train, n_epochs=2, eval_step=3, early_stopping=1,
+           mode='cv', store_test_predictions=True)
+    test_fold = np.asarray(meta_abl.data['test_fold'])
+    _, y = make_data()
+    assert len(model_abl.cv_test_predictions) == N_FOLDS
+    for fold in model_abl.cv_test_predictions:
+        np.testing.assert_allclose(np.ravel(fold['y_true']), y[test_fold],
+                                   rtol=1e-5)
+

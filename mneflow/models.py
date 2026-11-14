@@ -106,14 +106,19 @@ class BaseModel():
             self.dataset = Dataset(meta, **meta.data)
         else:
             print("Provide Dataset or Metadata file")
-        if self.dataset.h_params['channel_subset'] is None:
-            self.input_shape = (self.dataset.h_params['n_seq'],
-                                self.dataset.h_params['n_t'],
-                                self.dataset.h_params['n_ch'])
+        h_params = self.dataset.h_params
+        if h_params.get('sample_subset') is not None:
+            # Dataset._select_samples keeps these rows and columns (e.g.
+            # the parcels of an ablation); n_seq and n_t stay the stored
+            # shape, which is needed to parse the records
+            n_seq = n_t = len(h_params['sample_subset'])
         else:
-            self.input_shape = (self.dataset.h_params['n_seq'],
-                                self.dataset.h_params['n_t'],
-                                len(self.dataset.h_params['channel_subset']))
+            n_seq, n_t = h_params['n_seq'], h_params['n_t']
+        if h_params['channel_subset'] is None:
+            self.input_shape = (n_seq, n_t, h_params['n_ch'])
+        else:
+            self.input_shape = (n_seq, n_t,
+                                len(h_params['channel_subset']))
         self.y_shape = self.dataset.y_shape
         self.out_dim = np.prod(self.y_shape)
         self.inputs = layers.Input(shape=(self.input_shape))

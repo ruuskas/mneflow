@@ -40,6 +40,20 @@ Functional connectivity models:
   channels_first depthwise convolution there. The computation and the weights
   are unchanged.
 * The connectivity models are included in the API documentation.
+* ``SymmetricModel.extract_patterns`` gives the row and col components of
+  the strongest pair the pair's frequency weights, and both its frequency.
+  The pointwise layer weights the pair's feature with the row component's
+  kernel; the col component used to take its own kernel, which weights other
+  features.
+* The frequency weights are those of the SquareSum3d output
+  (``meta.weights['pointwise_effective']``): the pointwise kernel scaled per
+  frequency by the batch normalization and the (mean) attention between
+  them. They choose the components' frequencies and are the
+  ``freq_patterns``. Models with batch normalization or attention trained
+  with earlier versions don't have them: retrain them to extract patterns.
+* ``SymmetricModel.compute_patterns`` computes the activations (``ccms``,
+  ``covs``, ``corr_to_output``) through the model's layers. It skipped the
+  batch normalization and attention before the pointwise layer.
 
 Evaluation:
 

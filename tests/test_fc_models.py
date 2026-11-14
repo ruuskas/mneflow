@@ -219,12 +219,14 @@ def test_symmetric_patterns_without_trainable_pointwise(tfr_path):
     shared by all components (pointwise weights (n_freqs, n_folds))."""
     model = make_model(tfr_path, 'symmetric_fixed_pointwise')
     train_cv(model)
-    pointwise = model.meta.weights['pointwise']
+    assert model.meta.weights['pointwise'].shape == (N_FREQS, N_FOLDS)
+    pointwise = model.meta.weights['pointwise_effective']
     assert pointwise.shape == (N_FREQS, N_FOLDS)
     patterns = _quiet(model.extract_patterns)
     for key in ('row', 'col', 'diag'):
         assert patterns['spatial_patterns'][key].shape == (N_NODES, N_FOLDS)
     # The strongest frequency in each fold is that of the shared weights
+    # (of the SquareSum3d output)
     np.testing.assert_array_equal(
         patterns['freq_inds']['row'], np.argmax(pointwise, 0)
     )
@@ -503,8 +505,9 @@ def test_patterns_use_each_folds_validation_data(tfr_path):
     own validation data (it used to be the first fold's in every fold),
     recompute_input_covariance reproduces it, and the spatial patterns are
     dcov @ w for the chosen component and frequency."""
-    # The validation batch is the training batch: make it cover a whole
-    # validation fold (as in the age pipeline: batches of 50, folds of 48)
+    # Dataset's train_batch sets the validation batch (the training batch
+    # comes from the metadata): make it cover a whole validation fold (as
+    # in the age pipeline: batches of 50, folds of 48)
     model = make_model(tfr_path, 'symmetric', model_id='dcov_folds',
                        train_batch=32)
     assert all(len(f) <= 32 for f in model.dataset.h_params['folds'][0])
@@ -538,3 +541,87 @@ def test_patterns_use_each_folds_validation_data(tfr_path):
                 patterns['spatial_patterns'][key][:, i],
                 dcov[:, :, freq[i], i] @ w[freq[i], :, comp[i], i],
                 rtol=1e-5, atol=1e-8)
+
+
+def test_row_and_col_take_their_pairs_frequency(tfr_path):
+    """The pointwise layer weights the pair (row, col) with the row
+    component's frequency weights (see
+    test_trainable_pointwise_weights_each_component), so the row and col
+    components take those weights (of the SquareSum3d output) and their
+    largest frequency, not the col component's own weights."""
+    model = make_model(tfr_path, 'symmetric', model_id='pair_freq')
+    train_cv(model)
+    patterns = _quiet(model.extract_patterns)
+    pointwise = model.meta.weights['pointwise_effective']
+    for i in range(N_FOLDS):
+        row = patterns['comp_inds']['row'][i]
+        pair = pointwise[:, row, i]
+        for key in ('row', 'col'):
+            np.testing.assert_array_equal(
+                patterns['freq_patterns'][key][:, i], pair)
+            assert patterns['freq_inds'][key][i] == np.argmax(pair)
+
+
+def test_patterns_need_the_effective_pointwise_weights(tfr_path):
+    """Models trained before the effective pointwise weights were stored
+    can't give frequency patterns when batch normalization or attention
+    scales the frequencies: extract_patterns asks to retrain them."""
+    model = make_model(tfr_path, 'symmetric', model_id='no_effective')
+    train_cv(model)
+    del model.meta.weights['pointwise_effective']
+    with pytest.raises(ValueError, match='Retrain'):
+        model.extract_patterns()
+
+
+def test_activations_are_the_models(tfr_path):
+    """compute_patterns' activations go through the model's layers (incl.
+    the batch normalization and attention before the pointwise layer):
+    the output activations are the model's predictions."""
+    model = make_model(tfr_path, 'symmetric', model_id='activations')
+    assert model.specs['attention_rate'] > 0 and model.ssum_bn is not None
+    train_cv(model)
+    X, _ = next(iter(model.dataset.val))
+    activations = model._activations(X)
+    np.testing.assert_allclose(activations['fin_fc'],
+                               model.km(X, training=False), rtol=1e-5,
+                               atol=1e-5)
+    se_scale = activations['se_scale']
+    assert se_scale.shape == (len(X), N_FREQS)
+    assert np.all((se_scale > 0) & (se_scale < 1))
+
+
+def test_effective_pointwise_weights_are_those_of_the_squaresum_output(
+        tfr_path):
+    """Without attention, the pointwise layer is linear in the SquareSum3d
+    output (batch normalization in inference mode is affine): its output
+    at (a, c), where active, is a fixed linear function of ssum[a, c, :]
+    with the weights pointwise_effective[:, a]."""
+    model = make_model(tfr_path, 'symmetric', model_id='effective',
+                       attention_rate=0)
+    # Batch normalization that changes the weights: scale, shift and
+    # statistics differ by frequency
+    rng = np.random.default_rng(1)
+    bn = model.ssum_bn
+    bn.gamma.assign(rng.uniform(0.5, 2, N_FREQS) * rng.choice([-1, 1],
+                                                                N_FREQS))
+    bn.beta.assign(rng.normal(size=N_FREQS))
+    bn.moving_mean.assign(rng.uniform(0, 1, N_FREQS))
+    bn.moving_variance.assign(rng.uniform(0.1, 3, N_FREQS))
+    X, _ = make_data()
+    activations = model._activations(X)
+    ssum, out = activations['squaresym'], activations['pointwise'][..., 0]
+    weights = model._effective_pointwise()
+    kernel = np.squeeze(model.pointwise.kernel.numpy())
+    assert not np.allclose(weights, kernel)
+    n_fitted = 0
+    for a in range(ssum.shape[1]):
+        active = out[:, a, :] > 1e-3
+        if active.sum() < 2 * N_FREQS:
+            continue
+        design = np.column_stack([ssum[:, a][active],
+                                  np.ones(active.sum())])
+        coef = np.linalg.lstsq(design, out[:, a][active], rcond=None)[0]
+        np.testing.assert_allclose(coef[:-1], weights[:, a], rtol=1e-3,
+                                   atol=1e-4)
+        n_fitted += 1
+    assert n_fitted > 0

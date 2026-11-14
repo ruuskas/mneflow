@@ -1916,7 +1916,7 @@ def soft_attention(x):
     return attention_output
 
 
-def se_block(x, ratio=4):
+def se_block(x, ratio=4, return_scale=False):
     """
     Squeeze and excitation (SE) channel attention block.
 
@@ -1927,11 +1927,17 @@ def se_block(x, ratio=4):
     ratio : integer, optional
         Reduction parameter to reduce the number of channels.
         The default is 4.
+    return_scale : bool, optional
+        Whether to also return the channel attention scores.
+        The default is False.
 
     Returns
     -------
     out : tensor
         The input array multiplied by the channel attention scores.
+    scale : tensor, shape (batch, channels)
+        The channel attention scores (sigmoid outputs). Only returned
+        if ``return_scale`` is True.
     """
     b, _, _, c = x.shape
     y = GlobalAveragePooling2D()(x)
@@ -1939,6 +1945,8 @@ def se_block(x, ratio=4):
     y = Dense(c // ratio, activation='relu')(y)
     y = Dense(c, activation='sigmoid')(y)
     out = Multiply()([x, y])
+    if return_scale:
+        return out, y
     return out
 
 

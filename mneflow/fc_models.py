@@ -553,16 +553,24 @@ class SymmetricModel(BaseModel):
         print(
             f"Built: Depthwise convolutional layer with {self.specs['n_latent']} "
             f"filters. Input shape before: {inputs1.shape}, shape after: {ssum1.shape}")
+        # Intermediate outputs, for the activations (see _activations)
+        self._graph_outputs = {'squaresym': ssum1}
 
-        # Batch normalization and spatial dropout (optional)
+        # Batch normalization and spatial dropout (optional). The
+        # normalization is per frequency (the last axis).
+        self.ssum_bn = None
         if self.specs['spatial_dropout'] > 0:
-            ssum1 = BatchNormalization()(ssum1)
+            self.ssum_bn = BatchNormalization()
+            ssum1 = self.ssum_bn(ssum1)
             ssum1 = SpatialDropout2D(rate=self.specs['spatial_dropout'],
                                      data_format='channels_last')(ssum1)
 
-        # Channel attention block (optional)
+        # Channel attention block (optional): scales each frequency
         if self.specs['attention_rate'] > 0:
-            ssum1 = se_block(ssum1, ratio=self.specs['attention_rate'])
+            ssum1, se_scale = se_block(ssum1,
+                                       ratio=self.specs['attention_rate'],
+                                       return_scale=True)
+            self._graph_outputs['se_scale'] = se_scale
             print(
                 "Built: Squeeze-and-Excitation block added with channel reduction rate: ",
                 self.specs['attention_rate'])
@@ -586,6 +594,7 @@ class SymmetricModel(BaseModel):
         pointwise = self._apply_pointwise(ssum1)
         print(f"Built: Pointwise layer with {self.specs['n_latent_cross']} "
               f"filters. Input shape before: {ssum1.shape}, shape after: {pointwise.shape}")
+        self._graph_outputs['pointwise'] = pointwise
 
         # Flattening layer
         self.flat = Flatten()
@@ -599,6 +608,7 @@ class SymmetricModel(BaseModel):
             kernel_regularizer=keras.regularizers.l1(
                 self.specs['l1_lambda']))
         fc1 = self.fc1(flat)
+        self._graph_outputs['fc1'] = fc1
 
         print(f"Built: Dense layer with {self.specs['n_latent_dense']} units. "
               f"Input shape before: {flat.shape}, shape after: {fc1.shape}")
@@ -616,8 +626,64 @@ class SymmetricModel(BaseModel):
             kernel_regularizer=keras.regularizers.l1(
                 self.specs['l1_lambda']))
         y_pred = self.fc(dropout)
+        self._graph_outputs['fin_fc'] = y_pred
+        self._activation_model = None
 
         return y_pred
+
+    def _activations(self, X):
+        """The model's activations for the inputs X, in inference mode.
+
+        Returns a dict of numpy arrays: ``'squaresym'`` (the
+        SquareSum3d output), ``'se_scale'`` (the squeeze-and-excitation
+        scale of each frequency, shape (n_samples, n_freqs); only with
+        attention), ``'pointwise'``, ``'fc1'`` and ``'fin_fc'`` (the
+        output). The layers in between (batch normalization, dropout,
+        attention) are applied as in the model.
+        """
+        if self._activation_model is None:
+            self._activation_model = keras.Model(self.inputs,
+                                                 self._graph_outputs)
+        out = self._activation_model(X, training=False)
+        return {k: np.asarray(v) for k, v in out.items()}
+
+    def _effective_pointwise(self, se_scale=None):
+        """The pointwise weights of the SquareSum3d output.
+
+        Batch normalization and the attention block scale each
+        frequency of the SquareSum3d output before the pointwise layer:
+        frequency f's weight is ``kernel[f] * gamma_f /
+        sqrt(var_f + eps) * mean(se_scale[:, f])``. The normalization's
+        offsets don't depend on the input, and the attention scale is
+        averaged over the samples. Unlike the kernel, these weights act
+        on the (non-negative) SquareSum3d output.
+
+        Parameters
+        ----------
+        se_scale : array-like, shape (n_samples, n_freqs), optional
+            The attention scales of some data (see
+            :meth:`_activations`). Required if the model has an
+            attention block.
+
+        Returns
+        -------
+        weights : ndarray
+            The shape of ``extract_weights()['pointwise']``: frequency
+            first.
+        """
+        kernel = np.squeeze(self.pointwise.kernel.numpy())
+        gain = np.ones(kernel.shape[0])
+        if self.ssum_bn is not None:
+            bn = self.ssum_bn
+            gamma = bn.gamma.numpy() if bn.scale else 1.
+            gain = gain * gamma / np.sqrt(bn.moving_variance.numpy()
+                                          + bn.epsilon)
+        if 'se_scale' in self._graph_outputs:
+            if se_scale is None:
+                raise ValueError("The attention scales (se_scale) are "
+                                 "required: the model has attention.")
+            gain = gain * np.mean(se_scale, axis=0)
+        return kernel * gain.reshape(-1, *[1] * (kernel.ndim - 1))
 
     def _apply_pointwise(self, x) -> tf.Tensor:
         """Apply the pointwise layer to the SquareSum3d output ``x``.
@@ -715,8 +781,10 @@ class SymmetricModel(BaseModel):
         Returns
         -------
         patterns_struct : dict
-            Dictionary with keys 
-                ``'weights'`` model weights, see:meth:`extract_weights`, 
+            Dictionary with keys
+                ``'weights'`` model weights, see:meth:`extract_weights`,
+                and ``'pointwise_effective'`` (the pointwise weights of
+                the SquareSum3d output, see :meth:`_effective_pointwise`),
                 ``'ccms'`` mean activation of each layer, per class, over one batch, 
                 ``'dcov'`` sample covariance of the input, 
                 ``'covs'`` covariance of selected layer activations, 
@@ -763,16 +831,10 @@ class SymmetricModel(BaseModel):
 
         X, y = [row for row in ds.take(1)][0]
 
-        #get layer activations
-        activations = {}
-        activations['squaresym'] = self.squaresum_3d(X)
-        activations['pointwise'] = self._apply_pointwise(
-            activations['squaresym'])
-        if hasattr(self, "fc1"):
-            activations['fc1'] = self.fc1(self.flat(activations['pointwise']))
-            activations['fin_fc']  = self.fc(self.b2n(activations['fc1']))
-        else:
-            activations['fin_fc']  = self.fc(self.b2n(self.flat(activations['pointwise'])))
+        # Layer activations, through the model's layers (incl. the batch
+        # normalization and attention between SquareSum3d and the
+        # pointwise layer). (Were computed without them.)
+        activations = self._activations(X)
 
         if verbose:
             print(""""Activations: \n
@@ -793,11 +855,15 @@ class SymmetricModel(BaseModel):
         patterns_struct['ccms']['input'] = np.mean(X, 0)
 
         n_samp = np.shape(X)[0]
-        patterns_struct['covs']['fin_fc'] = np.cov(tf.transpose(activations['fc1']))
-        fc1_flat = tf.reshape(activations['pointwise'],[n_samp, -1])
-        patterns_struct['covs']['fc1'] = np.cov(tf.transpose(fc1_flat))
+        patterns_struct['covs']['fin_fc'] = np.cov(activations['fc1'].T)
+        fc1_flat = np.reshape(activations['pointwise'], [n_samp, -1])
+        patterns_struct['covs']['fc1'] = np.cov(fc1_flat.T)
 
         weights = self.extract_weights()
+        # The pointwise weights of the SquareSum3d output, with this
+        # data's attention scales (for the frequency patterns)
+        weights['pointwise_effective'] = self._effective_pointwise(
+            activations.get('se_scale'))
 
         # Spatial covariance of the input rows, for the activation patterns.
         # (Was np.einsum('hijk, hilk -> ilk'), which correlates each row's
@@ -1113,14 +1179,17 @@ class SymmetricModel(BaseModel):
         """Recompute ``self.cv_patterns['dcov']`` for every CV fold from
         that fold's validation data, with :func:`input_covariance`.
 
-        The covariance depends only on the data, so the patterns of a
-        trained model can be corrected without retraining: e.g. for models
-        trained before the covariance and the per-fold validation data
-        were fixed (the covariance used to be computed with the wrong
-        formula, from the first fold's validation data in every fold).
-        Uses the whole validation fold. Training uses one validation batch,
-        which has the training batch size: the same data if the batch is at
-        least as large as the fold (e.g. batches of 50, folds of 48).
+        The covariance depends only on the data, so it can be recomputed
+        for a trained model, e.g. one trained before the covariance and
+        the per-fold validation data were fixed (the covariance used to be
+        computed with the wrong formula, from the first fold's validation
+        data in every fold). (Such a model with batch normalization or
+        attention still needs retraining for :meth:`extract_patterns`.)
+        Uses the whole validation fold. Training uses the first batch of
+        the validation fold (the Dataset's validation batch size, its
+        ``test_batch``, or ``train_batch`` if not given): the same data if
+        the batch is at least as large as the fold (e.g. batches of 50,
+        folds of 48).
         """
         folds = self.dataset.h_params['folds']
         n_folds = len(folds[0])
@@ -1152,10 +1221,18 @@ class SymmetricModel(BaseModel):
         :class:`~mneflow.layers.SquareSum3d` spatial weight
         (``self.meta.weights['ssum1']``).
 
+        The pointwise layer weights the feature of the pair (row, col)
+        with the row component's frequency weights. So the row and col
+        components take the frequency weights of their pair, and the same
+        frequency. The frequency weights are those of the SquareSum3d
+        output (``self.meta.weights['pointwise_effective']``, see
+        :meth:`_effective_pointwise`): the pointwise kernel scaled by the
+        batch normalization and attention in between.
+
         Returns
         -------
         out : dict
-            Nested dict with keys 
+            Nested dict with keys
             ``'spatial_patterns'``,
             ``'freq_patterns'``,
             ``'freq_inds'``, and
@@ -1165,10 +1242,18 @@ class SymmetricModel(BaseModel):
             ``dcov[:, :, f] @ w``, the activation pattern of the
             component's spatial weights w at its frequency f.
             ``freq_patterns[key]`` has shape ``(n_freqs, n_folds)``: the
-            component's pointwise (frequency) weights; ``freq_inds[key]``
-            (the frequency f, the largest weight; for 'diag' the largest
-            absolute weight) and ``comp_inds[key]`` have shape
-            ``(n_folds,)``.
+            frequency weights of the component's feature (the same for
+            'row' and 'col'); ``freq_inds[key]`` (the frequency f, the
+            largest weight; for 'diag' the largest absolute weight) and
+            ``comp_inds[key]`` have shape ``(n_folds,)``.
+
+        Raises
+        ------
+        ValueError
+            If the model has batch normalization or attention before the
+            pointwise layer, and its metadata has no
+            ``'pointwise_effective'`` weights (trained with an older
+            mneflow): retrain it.
 
         """
         out = defaultdict(dict)
@@ -1183,7 +1268,16 @@ class SymmetricModel(BaseModel):
         comp_inds = defaultdict(list)
         freq_patterns = defaultdict(list)
 
-        pointwise = self.meta.weights['pointwise']
+        if 'pointwise_effective' in self.meta.weights:
+            pointwise = self.meta.weights['pointwise_effective']
+        elif self.ssum_bn is not None or 'se_scale' in self._graph_outputs:
+            raise ValueError(
+                "No 'pointwise_effective' weights in the metadata: the "
+                "model was trained with an mneflow version that didn't "
+                "store them. Retrain it to extract its patterns.")
+        else:
+            # Nothing between SquareSum3d and the pointwise layer
+            pointwise = self.meta.weights['pointwise']
         trainable_pointwise = self.meta.model_specs.get(
             'trainable_pointwise_kernel', True)
         if not trainable_pointwise and pointwise.ndim != 2:
@@ -1210,12 +1304,15 @@ class SymmetricModel(BaseModel):
             # that np.unravel_index mapped to row 0 in every fold.)
             row, col = np.unravel_index(np.argmax(fcr), fcr.shape)
 
-            max_freq_row = np.argmax(freq_weights(row, i))
+            # The pair's feature is weighted by the row component's
+            # frequency weights: both components take its frequency. (The
+            # col component used to take its own weights, which weight the
+            # features (col, *), not this pair.)
+            pair_weights = freq_weights(row, i)
+            max_freq_row = max_freq_col = np.argmax(pair_weights)
             spatial_kernel_row = self.meta.weights['ssum1'][max_freq_row, :, row, i]
             spatial_pattern_row = np.dot(self.cv_patterns['dcov'][:, :, max_freq_row, i], spatial_kernel_row.T)
 
-
-            max_freq_col = np.argmax(freq_weights(col, i))
             spatial_kernel_col = self.meta.weights['ssum1'][max_freq_col, :, col, i]
             spatial_pattern_col = np.dot(self.cv_patterns['dcov'][:, :, max_freq_col, i], spatial_kernel_col.T)
 
@@ -1237,8 +1334,8 @@ class SymmetricModel(BaseModel):
             connectivity_patterns['col'].append(spatial_pattern_col)
             connectivity_patterns['diag'].append(spatial_pattern_diag)
 
-            freq_patterns['row'].append(freq_weights(row, i))
-            freq_patterns['col'].append(freq_weights(col, i))
+            freq_patterns['row'].append(pair_weights)
+            freq_patterns['col'].append(pair_weights)
             freq_patterns['diag'].append(freq_weights(diag, i))
 
         out['spatial_patterns']['row'] = np.stack(connectivity_patterns['row'], -1)

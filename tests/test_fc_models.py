@@ -20,6 +20,7 @@ from mneflow.fc_models import (
     WeightedSum3dModel,
     SymmetricModel,
     _fold_stability,
+    input_covariance,
 )
 
 N_SAMPLES, N_NODES, N_FREQS, N_FOLDS = 96, 6, 4, 3
@@ -94,7 +95,7 @@ def tfr_path(tmp_path_factory):
     return path
 
 
-def make_model(tfr_path, name, model_id=None, **extra_specs):
+def make_model(tfr_path, name, model_id=None, train_batch=16, **extra_specs):
     cls, specs, _ = CONFIGS[name]
     keras.utils.set_random_seed(0)
     meta = mneflow.load_meta(str(tfr_path), 'fc')
@@ -106,7 +107,7 @@ def make_model(tfr_path, name, model_id=None, **extra_specs):
             COMMON_SPECS, **specs, **extra_specs, model_id=model_id or name
         )
     )
-    dataset = mneflow.Dataset(meta, train_batch=16)
+    dataset = mneflow.Dataset(meta, train_batch=train_batch)
     model = _quiet(cls, meta=meta, dataset=dataset, specs_prefix=False)
     _quiet(
         model.build,
@@ -476,3 +477,64 @@ def test_row_and_col_components_are_the_strongest_weight(tfr_path):
                                   [n_comp - 1] * N_FOLDS)
     np.testing.assert_array_equal(patterns['comp_inds']['col'],
                                   [1] * N_FOLDS)
+
+
+def test_input_covariance_is_the_row_covariance():
+    """input_covariance is the covariance of the rows over (sample,
+    column) observations, centred over samples: symmetric and positive
+    semidefinite, with a positive trace (the diagonals of the inputs are
+    zero)."""
+    X, _ = make_data()
+    X = X[:20]
+    dcov = input_covariance(X)
+    Xc = X - X.mean(0)
+    for k in range(N_FREQS):
+        rows = Xc[..., k].transpose(1, 0, 2).reshape(N_NODES, -1)
+        expected = rows @ rows.T / (len(X) - 1)
+        np.testing.assert_allclose(dcov[..., k], expected, rtol=1e-5,
+                                   atol=1e-8)
+        np.testing.assert_allclose(dcov[..., k], dcov[..., k].T, atol=1e-10)
+        assert np.linalg.eigvalsh(dcov[..., k]).min() > -1e-8
+        assert np.trace(dcov[..., k]) > 0
+
+
+def test_patterns_use_each_folds_validation_data(tfr_path):
+    """During CV training, each fold's covariance comes from that fold's
+    own validation data (it used to be the first fold's in every fold),
+    recompute_input_covariance reproduces it, and the spatial patterns are
+    dcov @ w for the chosen component and frequency."""
+    # The validation batch is the training batch: make it cover a whole
+    # validation fold (as in the age pipeline: batches of 50, folds of 48)
+    model = make_model(tfr_path, 'symmetric', model_id='dcov_folds',
+                       train_batch=32)
+    assert all(len(f) <= 32 for f in model.dataset.h_params['folds'][0])
+    train_cv(model)
+    dcov = np.array(model.cv_patterns['dcov'])
+    for fold in range(N_FOLDS):
+        _, val = model.dataset._build_dataset(
+            model.dataset.h_params['train_paths'],
+            train_batch=model.dataset.training_batch, test_batch=None,
+            split=True, val_fold_ind=fold)
+        X, _ = next(iter(val))
+        np.testing.assert_allclose(dcov[..., fold], input_covariance(X),
+                                   rtol=1e-5, atol=1e-8)
+    assert not np.allclose(dcov[..., 0], dcov[..., 1])
+
+    model.cv_patterns['dcov'] = np.zeros_like(dcov)
+    recomputed = _quiet(model.recompute_input_covariance)
+    np.testing.assert_allclose(recomputed, dcov, rtol=1e-5, atol=1e-8)
+
+    patterns = _quiet(model.extract_patterns)
+    w = model.meta.weights['ssum1']
+    for key in ('row', 'col', 'diag'):
+        freq = patterns['freq_inds'][key]
+        comp = patterns['comp_inds'][key]
+        kernels = patterns['freq_patterns'][key]
+        assert kernels.shape == (N_FREQS, N_FOLDS)
+        best = (np.abs(kernels) if key == 'diag' else kernels).argmax(0)
+        np.testing.assert_array_equal(freq, best)
+        for i in range(N_FOLDS):
+            np.testing.assert_allclose(
+                patterns['spatial_patterns'][key][:, i],
+                dcov[:, :, freq[i], i] @ w[freq[i], :, comp[i], i],
+                rtol=1e-5, atol=1e-8)

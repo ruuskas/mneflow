@@ -28,6 +28,31 @@ from .models import BaseModel
 from .data import Dataset
 
 
+def input_covariance(X):
+    """Spatial covariance of connectivity inputs, per frequency.
+
+    SquareSum3d first projects the rows of each input matrix,
+    ``s[h, j] = sum_i X[h, i, j] w[i]``: the rows i are the channels and
+    each (sample h, column j) pair is an observation. Its activation
+    pattern (Haufe et al., 2014) is ``C @ w`` with the covariance of the
+    rows over these observations,
+    ``C[i, l] = sum_{h, j} X[h, i, j] X[h, l, j] / (n_samples - 1)``.
+    X is centred over the samples only.
+
+    Parameters
+    ----------
+    X : array-like, shape (n_samples, n_nodes, n_nodes, n_freqs)
+
+    Returns
+    -------
+    dcov : ndarray, shape (n_nodes, n_nodes, n_freqs)
+        Symmetric and positive semidefinite for each frequency.
+    """
+    X = np.asarray(X, dtype=np.float64)
+    X = X - X.mean(axis=0, keepdims=True)
+    return np.einsum('hijk, hljk -> ilk', X, X) / (X.shape[0] - 1)
+
+
 def _fold_stability(data, threshold):
     """Consistency of spatial patterns across CV folds.
 
@@ -737,7 +762,6 @@ class SymmetricModel(BaseModel):
 
 
         X, y = [row for row in ds.take(1)][0]
-        ndof = X.shape[0] - 1
 
         #get layer activations
         activations = {}
@@ -775,11 +799,10 @@ class SymmetricModel(BaseModel):
 
         weights = self.extract_weights()
 
-        dcov = {}
-        #Compute covariance across samples
-        X -= keras.ops.mean(X, axis=0, keepdims=True)
-        dcov = np.einsum('hijk, hilk -> ilk', X, X) / ndof
-        print("DCOV:", dcov.shape)
+        # Spatial covariance of the input rows, for the activation patterns.
+        # (Was np.einsum('hijk, hilk -> ilk'), which correlates each row's
+        # sum with its own entries and is not a covariance.)
+        dcov = input_covariance(X)
 
 
         patterns_struct['weights'] = weights
@@ -1086,6 +1109,35 @@ class SymmetricModel(BaseModel):
 
 
 
+    def recompute_input_covariance(self):
+        """Recompute ``self.cv_patterns['dcov']`` for every CV fold from
+        that fold's validation data, with :func:`input_covariance`.
+
+        The covariance depends only on the data, so the patterns of a
+        trained model can be corrected without retraining: e.g. for models
+        trained before the covariance and the per-fold validation data
+        were fixed (the covariance used to be computed with the wrong
+        formula, from the first fold's validation data in every fold).
+        Uses the whole validation fold. Training uses one validation batch,
+        which has the training batch size: the same data if the batch is at
+        least as large as the fold (e.g. batches of 50, folds of 48).
+        """
+        folds = self.dataset.h_params['folds']
+        n_folds = len(folds[0])
+        dcov = None
+        for fold in range(n_folds):
+            _, val = self.dataset._build_dataset(
+                self.dataset.h_params['train_paths'],
+                train_batch=self.dataset.training_batch,
+                test_batch=None, split=True, val_fold_ind=fold)
+            X, _ = next(iter(val))
+            fold_cov = input_covariance(X)
+            if dcov is None:
+                dcov = np.zeros(fold_cov.shape + (n_folds,))
+            dcov[..., fold] = fold_cov
+        self.cv_patterns['dcov'] = dcov
+        return dcov
+
     def extract_patterns(self):
         """
         Extracts spatial connectivity patterns from a cross-validated model.
@@ -1105,12 +1157,18 @@ class SymmetricModel(BaseModel):
         out : dict
             Nested dict with keys 
             ``'spatial_patterns'``,
-            ``'freq_inds'``, and 
-            ``'comp_inds'``, 
+            ``'freq_patterns'``,
+            ``'freq_inds'``, and
+            ``'comp_inds'``,
             each itself a dict with sub-keys ``'row'``, ``'col'``, and ``'diag'``.
-            ``spatial_patterns[key]`` has shape
-            ``(n_parcels, n_parcels, n_folds)``; ``freq_inds[key]``
-            and ``comp_inds[key]`` have shape ``(n_folds,)``.
+            ``spatial_patterns[key]`` has shape ``(n_parcels, n_folds)``:
+            ``dcov[:, :, f] @ w``, the activation pattern of the
+            component's spatial weights w at its frequency f.
+            ``freq_patterns[key]`` has shape ``(n_freqs, n_folds)``: the
+            component's pointwise (frequency) weights; ``freq_inds[key]``
+            (the frequency f, the largest weight; for 'diag' the largest
+            absolute weight) and ``comp_inds[key]`` have shape
+            ``(n_folds,)``.
 
         """
         out = defaultdict(dict)
@@ -1123,6 +1181,7 @@ class SymmetricModel(BaseModel):
         connectivity_patterns = defaultdict(list)
         freq_inds = defaultdict(list)
         comp_inds = defaultdict(list)
+        freq_patterns = defaultdict(list)
 
         pointwise = self.meta.weights['pointwise']
         trainable_pointwise = self.meta.model_specs.get(
@@ -1178,6 +1237,10 @@ class SymmetricModel(BaseModel):
             connectivity_patterns['col'].append(spatial_pattern_col)
             connectivity_patterns['diag'].append(spatial_pattern_diag)
 
+            freq_patterns['row'].append(freq_weights(row, i))
+            freq_patterns['col'].append(freq_weights(col, i))
+            freq_patterns['diag'].append(freq_weights(diag, i))
+
         out['spatial_patterns']['row'] = np.stack(connectivity_patterns['row'], -1)
         out['spatial_patterns']['col'] = np.stack(connectivity_patterns['col'], -1)
         out['spatial_patterns']['diag'] = np.stack(connectivity_patterns['diag'], -1)
@@ -1187,6 +1250,8 @@ class SymmetricModel(BaseModel):
         out['comp_inds']['row'] = np.array(comp_inds['row'])
         out['comp_inds']['col'] = np.array(comp_inds['col'])
         out['comp_inds']['diag'] = np.array(comp_inds['diag'])
+        for key in ('row', 'col', 'diag'):
+            out['freq_patterns'][key] = np.stack(freq_patterns[key], -1)
 
         return out
 

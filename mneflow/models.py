@@ -393,6 +393,10 @@ class BaseModel():
                                                    train_batch=self.dataset.training_batch,
                                                    test_batch=self.dataset.validation_batch,
                                                    split=True, val_fold_ind=self.current_fold)
+            # This fold's data are the dataset's current ones: e.g.
+            # collect_patterns reads self.dataset.val, which otherwise stays
+            # the first fold's validation set in every fold
+            self.dataset.train, self.dataset.val = train, val
             if not noisy_labels:
                 stop_early = keras.callbacks.EarlyStopping(monitor='val_loss',
                                                               min_delta=self.meta.train_params['min_delta'],

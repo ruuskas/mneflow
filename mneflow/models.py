@@ -255,7 +255,7 @@ class BaseModel():
               collect_patterns=False, class_weights=None,
               noisy_labels=False, noise_std=.1, shapley_order=1, fold=0, 
               compute_pvalues=False, store_fold_predictions=False,
-              store_test_predictions=False) :
+              store_test_predictions=False, save_fold_weights=False) :
 
         """
         Train a model
@@ -321,6 +321,13 @@ class BaseModel():
             the test TFRecords, i.e. of ``MetaData.data['test_fold']`` for
             ``test_set='holdout'``, so the folds' predictions can be
             averaged per sample. Defaults to False.
+
+        save_fold_weights : bool, optional
+            Whether to save each fold model's weights (after early
+            stopping restored the best ones) to
+            :meth:`fold_weights_path`, so that every fold's model can be
+            loaded after training. Otherwise only the last fold's model
+            is saved (by :meth:`save`). Defaults to False.
 
         Returns
         -------
@@ -433,6 +440,9 @@ class BaseModel():
                                             )
 
             self.meta.train_params.update({"trained":True})
+
+            if save_fold_weights:
+                self.km.save_weights(self.fold_weights_path(jj))
 
             v_loss, v_metric = self.evaluate(val)
             self.cv_losses.append(v_loss)
@@ -567,6 +577,23 @@ class BaseModel():
         self.save()
         #return self.cv_losses, self.cv_metrics
 
+
+    def fold_weights_path(self, fold):
+        """Path of the weights of one fold's model, as saved by
+        :meth:`train` with ``save_fold_weights=True``.
+
+        Parameters
+        ----------
+        fold : int
+            Index of the fold.
+
+        Returns
+        -------
+        path : str
+            ``<model_path>/<model_name>_fold<kk>.weights.h5``.
+        """
+        return os.path.join(self.model_path,
+                            f"{self.model_name}_fold{fold:02d}.weights.h5")
 
     def prune_weights(self, increase_regularization=3.):
         """Continue training with increased L1/L2 regularization to prune weights.

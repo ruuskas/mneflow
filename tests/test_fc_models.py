@@ -656,3 +656,31 @@ def test_each_cv_fold_starts_with_a_fresh_optimizer(tfr_path, monkeypatch):
                 # iteration count and moments
                 assert not np.any(value), path
         assert end[opt.iterations.path] > 0
+
+
+def test_cv_training_saves_each_folds_weights(tfr_path):
+    """With save_fold_weights, each fold's model can be loaded after
+    training: its weights reproduce that fold's test predictions."""
+    model = make_model(tfr_path, 'symmetric', model_id='fold_weights')
+    _quiet(
+        model.train,
+        n_epochs=2,
+        eval_step=3,
+        early_stopping=1,
+        mode='cv',
+        store_test_predictions=True,
+        save_fold_weights=True,
+    )
+    X, _ = make_data()
+    X_test = X[np.asarray(model.meta.data['test_fold'])]
+    for fold in range(N_FOLDS):
+        path = model.fold_weights_path(fold)
+        assert os.path.exists(path)
+        model.km.load_weights(path)
+        pred = np.ravel(model.km(X_test, training=False))
+        np.testing.assert_allclose(
+            pred,
+            np.ravel(model.cv_test_predictions[fold]['y_pred']),
+            rtol=1e-4,
+            atol=1e-4,
+        )

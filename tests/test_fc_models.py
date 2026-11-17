@@ -684,3 +684,88 @@ def test_cv_training_saves_each_folds_weights(tfr_path):
             rtol=1e-4,
             atol=1e-4,
         )
+
+
+def test_feature_relevance_is_on_the_features_the_model_reads(tfr_path):
+    """With the dense layer reading one SquareSum3d pair only, all the
+    relevance is on that pair."""
+    model = make_model(tfr_path, 'symmetric', model_id='relevance')
+    n_latent = model.specs['n_latent']
+    a, b = 1, 2
+    kernel = np.abs(model.fc1.kernel.numpy())
+    keep = np.zeros(kernel.shape[0], bool)
+    keep[a * n_latent + b] = True  # flattened (a, b, pointwise)
+    kernel[~keep] = 0
+    model.fc1.kernel.assign(kernel)
+    # A path through the ReLUs: positive weights after the features
+    model.fc1.bias.assign(np.zeros_like(model.fc1.bias.numpy()))
+    model.pointwise.kernel.assign(np.abs(model.pointwise.kernel.numpy()))
+    model.fc.kernel.assign(np.ones_like(model.fc.kernel.numpy()))
+    X, _ = make_data()
+    R = model.feature_relevance(X[:32])
+    assert R.shape == (n_latent, n_latent, N_FREQS)
+    assert np.all(R >= 0)
+    # The pointwise layer of pair (a, b) weights all frequencies of S[a, b].
+    # The other features reach the output only through the attention
+    # block's pooling, a small effect.
+    others = np.ones_like(R, bool)
+    others[a, b] = False
+    assert R[a, b].sum() > 0
+    assert R[others].max() < 0.01 * R[a, b].max()
+
+
+def test_combined_pattern_of_a_single_relevant_filter(tfr_path, monkeypatch):
+    """With all the relevance on one filter at one frequency, the combined
+    pattern is that filter's |z-scored| activation pattern."""
+    model = make_model(tfr_path, 'symmetric', model_id='combined_single')
+    n_latent = model.specs['n_latent']
+    a, f = 2, 1
+    R = np.zeros((n_latent, n_latent, N_FREQS))
+    R[a, a, f] = 1.
+    monkeypatch.setattr(model, 'feature_relevance', lambda X: R)
+    X, _ = make_data()
+    dcov = input_covariance(X)
+    out = model.combined_pattern(X, dcov)
+    w = model.squaresum_3d.w.numpy()[f, :, a]
+    p = np.abs(dcov[:, :, f] @ w)
+    np.testing.assert_allclose(out['pattern'], (p - p.mean()) / p.std(),
+                               rtol=1e-5, atol=1e-6)
+    expected = np.zeros(N_FREQS)
+    expected[f] = 1
+    np.testing.assert_allclose(out['freq_relevance'], expected)
+    assert out['filter_relevance'][a, f] == 1
+
+
+def test_combined_patterns_use_each_folds_model_and_data(tfr_path):
+    """Each fold's combined pattern comes from that fold's weights and
+    validation data."""
+    model = make_model(tfr_path, 'symmetric', model_id='combined_folds')
+    _quiet(
+        model.train,
+        n_epochs=2,
+        eval_step=3,
+        early_stopping=1,
+        mode='cv',
+        collect_patterns=True,
+        save_fold_weights=True,
+    )
+    out = _quiet(model.extract_combined_patterns)
+    n_latent = model.specs['n_latent']
+    assert out['pattern'].shape == (N_NODES, N_FOLDS)
+    assert out['freq_relevance'].shape == (N_FREQS, N_FOLDS)
+    assert out['filter_relevance'].shape == (n_latent, N_FREQS, N_FOLDS)
+    np.testing.assert_allclose(out['freq_relevance'].sum(0), 1, rtol=1e-5)
+    fold = 1
+    model.km.load_weights(model.fold_weights_path(fold))
+    X = model._validation_data(fold)
+    expected = model.combined_pattern(X, input_covariance(X))
+    np.testing.assert_allclose(out['pattern'][:, fold], expected['pattern'],
+                               rtol=1e-4, atol=1e-5)
+
+
+def test_combined_patterns_need_each_folds_weights(tfr_path):
+    model = make_model(tfr_path, 'symmetric', model_id='combined_missing')
+    missing = [os.path.join(model.model_path, f'missing_{k}.weights.h5')
+               for k in range(N_FOLDS)]
+    with pytest.raises(FileNotFoundError, match='save_fold_weights'):
+        model.extract_combined_patterns(weight_paths=missing)

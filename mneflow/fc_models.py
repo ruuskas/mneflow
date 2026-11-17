@@ -6,6 +6,7 @@ Created on Fri Jul 12 10:33:35 2024
 @author: eero.saarro@aalto.fi
 """
 
+import os
 from collections import defaultdict
 from copy import deepcopy
 from typing import cast
@@ -1175,6 +1176,16 @@ class SymmetricModel(BaseModel):
 
 
 
+    def _validation_data(self, fold):
+        """Inputs of one CV fold's validation set (its first batch: the
+        whole fold, see :meth:`recompute_input_covariance`)."""
+        _, val = self.dataset._build_dataset(
+            self.dataset.h_params['train_paths'],
+            train_batch=self.dataset.training_batch,
+            test_batch=None, split=True, val_fold_ind=fold)
+        X, _ = next(iter(val))
+        return X
+
     def recompute_input_covariance(self):
         """Recompute ``self.cv_patterns['dcov']`` for every CV fold from
         that fold's validation data, with :func:`input_covariance`.
@@ -1191,16 +1202,10 @@ class SymmetricModel(BaseModel):
         the batch is at least as large as the fold (e.g. batches of 50,
         folds of 48).
         """
-        folds = self.dataset.h_params['folds']
-        n_folds = len(folds[0])
+        n_folds = len(self.dataset.h_params['folds'][0])
         dcov = None
         for fold in range(n_folds):
-            _, val = self.dataset._build_dataset(
-                self.dataset.h_params['train_paths'],
-                train_batch=self.dataset.training_batch,
-                test_batch=None, split=True, val_fold_ind=fold)
-            X, _ = next(iter(val))
-            fold_cov = input_covariance(X)
+            fold_cov = input_covariance(self._validation_data(fold))
             if dcov is None:
                 dcov = np.zeros(fold_cov.shape + (n_folds,))
             dcov[..., fold] = fold_cov
@@ -1352,5 +1357,126 @@ class SymmetricModel(BaseModel):
 
         return out
 
+    def feature_relevance(self, X):
+        """Relevance of each SquareSum3d feature for the prediction.
 
+        Gradient x input at the SquareSum3d output ``S`` (after its
+        ReLU): ``R[a, b, f] = mean_h |dy_h / dS[h, a, b, f] *
+        S[h, a, b, f]|`` over the samples h of X, in inference mode.
+        Unlike the weights, it accounts for everything between the
+        features and the output (batch normalization, attention, the
+        pointwise and dense layers and their ReLUs).
 
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_nodes, n_nodes, n_freqs)
+
+        Returns
+        -------
+        R : ndarray, shape (n_latent, n_latent, n_freqs)
+        """
+        if self._activation_model is None:
+            self._activation_model = keras.Model(self.inputs,
+                                                 self._graph_outputs)
+        X = tf.convert_to_tensor(X, dtype=tf.float32)
+        with tf.GradientTape() as tape:
+            out = self._activation_model(X, training=False)
+            features = out['squaresym']
+        # features depend on the (watched) trainable weights, so the tape
+        # recorded the path from them to the output. The samples are
+        # independent (inference mode), so the gradient of the summed
+        # outputs is each sample's gradient
+        grad = tape.gradient(out['fin_fc'], features)
+        return np.mean(np.abs(grad.numpy() * features.numpy()), axis=0)
+
+    def combined_pattern(self, X, dcov):
+        """Activation pattern combined over all spatial filters and
+        frequencies, weighted by their relevance (current weights).
+
+        For spatial filter a at frequency f, the activation pattern is
+        ``p[:, a, f] = dcov[:, :, f] @ w[f, :, a]`` (as in
+        :meth:`extract_patterns`). Its relevance is that of the features
+        it takes part in, as row or column (``S[a, b, f] = w_a^T X_f
+        w_b``): ``r[a, f] = sum_b R[a, b, f] + R[b, a, f]``, with R from
+        :meth:`feature_relevance` on X. The combined pattern is
+        ``sum_{a, f} r[a, f] |z(p[:, a, f])| / sum r``, z the z-score
+        over the parcels: the absolute value as the sign of a pattern is
+        arbitrary (w^T X w), and the z-score so that filters with a large
+        covariance don't dominate.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_nodes, n_nodes, n_freqs)
+            The data for the relevance, e.g. the model's validation fold.
+        dcov : ndarray, shape (n_nodes, n_nodes, n_freqs)
+            The input covariance (:func:`input_covariance`), of the same
+            data.
+
+        Returns
+        -------
+        out : dict
+            ``'pattern'`` (n_nodes,), the combined pattern;
+            ``'freq_relevance'`` (n_freqs,) and ``'filter_relevance'``
+            (n_latent, n_freqs), the relevance of each frequency and of
+            each filter at each frequency, as shares of the total; and
+            ``'relevance'``, R.
+        """
+        R = self.feature_relevance(X)
+        r = R.sum(axis=1) + R.sum(axis=0)  # (n_latent, n_freqs)
+        w = self.squaresum_3d.w.numpy()  # (n_freqs, n_nodes, n_latent)
+        p = np.abs(np.einsum('ilf,fla->iaf', dcov, w))
+        sd = p.std(axis=0)
+        z = np.divide(p - p.mean(axis=0), sd, out=np.zeros_like(p),
+                      where=sd > 0)
+        total = r.sum()
+        if total <= 0:
+            raise ValueError("The features have no relevance (the model's "
+                             "output doesn't depend on them)")
+        return {'pattern': np.einsum('iaf,af->i', z, r) / total,
+                'freq_relevance': r.sum(axis=0) / total,
+                'filter_relevance': r / total,
+                'relevance': R}
+
+    def extract_combined_patterns(self, weight_paths=None):
+        """Combined patterns (:meth:`combined_pattern`) of each CV fold's
+        model, from its validation fold: the relevance and the input
+        covariance both come from the whole fold.
+
+        Parameters
+        ----------
+        weight_paths : list of str, optional
+            The weights of each fold's model. Defaults to those saved by
+            :meth:`train` with ``save_fold_weights=True``
+            (:meth:`fold_weights_path`).
+
+        Returns
+        -------
+        out : dict
+            ``'pattern'`` (n_nodes, n_folds), ``'freq_relevance'``
+            (n_freqs, n_folds) and ``'filter_relevance'`` (n_latent,
+            n_freqs, n_folds). The model is left with the last fold's
+            weights.
+
+        Raises
+        ------
+        FileNotFoundError
+            If a fold's weights are missing (trained without
+            ``save_fold_weights``).
+        """
+        n_folds = len(self.dataset.h_params['folds'][0])
+        if weight_paths is None:
+            weight_paths = [self.fold_weights_path(k)
+                            for k in range(n_folds)]
+        missing = [p for p in weight_paths if not os.path.exists(p)]
+        if missing:
+            raise FileNotFoundError(
+                f"No weights of {len(missing)} fold models, e.g. "
+                f"{missing[0]}: train with save_fold_weights=True.")
+        out = defaultdict(list)
+        for fold, path in enumerate(weight_paths):
+            self.km.load_weights(path)
+            X = self._validation_data(fold)
+            res = self.combined_pattern(X, input_covariance(X))
+            for key in ('pattern', 'freq_relevance', 'filter_relevance'):
+                out[key].append(res[key])
+        return {key: np.stack(v, -1) for key, v in out.items()}

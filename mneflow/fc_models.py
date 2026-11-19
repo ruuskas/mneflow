@@ -29,6 +29,24 @@ from .models import BaseModel
 from .data import Dataset
 
 
+@keras.saving.register_keras_serializable(package="mneflow")
+class GaussianNoise(keras.layers.GaussianNoise):
+    """keras.layers.GaussianNoise without its upper limit of 1 on stddev.
+
+    The input noise of the FC models is in units of the inputs, which can
+    be z-scored (SD 1), so SDs above 1 are useful. Otherwise the same
+    layer (and layer name): additive N(0, stddev) noise, in training only.
+    """
+
+    def __init__(self, stddev, seed=None, **kwargs):
+        if stddev < 0:
+            raise ValueError(f"stddev must be >= 0, got {stddev}")
+        # The parent checks 0 <= stddev <= 1 and creates the seed
+        # generator if stddev > 0; then the actual stddev is set.
+        super().__init__(stddev=min(stddev, 1.), seed=seed, **kwargs)
+        self.stddev = stddev
+
+
 def input_covariance(X):
     """Spatial covariance of connectivity inputs, per frequency.
 
@@ -164,7 +182,7 @@ class Conv3DModel(BaseModel):
 
         # Gaussian Noise layer
         if self.specs['stddev'] > 0:
-            self.gaussian_noise = keras.layers.GaussianNoise(
+            self.gaussian_noise = GaussianNoise(
                 stddev=self.specs['stddev'])
             inputs1 = self.gaussian_noise(self.inputs)
             print(f"Gaussian noise with stddev: {self.specs['stddev']} "
@@ -346,7 +364,7 @@ class WeightedSum3dModel(BaseModel):
 
         # Gaussian Noise layer
         if self.specs['stddev'] > 0:
-            self.gaussian_noise = keras.layers.GaussianNoise(
+            self.gaussian_noise = GaussianNoise(
                 stddev=self.specs['stddev'])
             inputs1 = self.gaussian_noise(self.inputs)
             print(f"Gaussian noise with stddev: {self.specs['stddev']} "
@@ -537,7 +555,7 @@ class SymmetricModel(BaseModel):
 
         # Gaussian Noise layer
         if self.specs['stddev'] > 0:
-            self.gaussian_noise = keras.layers.GaussianNoise(
+            self.gaussian_noise = GaussianNoise(
                 stddev=self.specs['stddev'])
             inputs1 = self.gaussian_noise(self.inputs)
             print(f"Gaussian noise with stddev: {self.specs['stddev']} "

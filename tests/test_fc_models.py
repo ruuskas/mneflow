@@ -17,6 +17,7 @@ import pytest
 import mneflow
 from mneflow.fc_models import (
     Conv3DModel,
+    GaussianNoise,
     WeightedSum3dModel,
     SymmetricModel,
     _fold_stability,
@@ -769,3 +770,33 @@ def test_combined_patterns_need_each_folds_weights(tfr_path):
                for k in range(N_FOLDS)]
     with pytest.raises(FileNotFoundError, match='save_fold_weights'):
         model.extract_combined_patterns(weight_paths=missing)
+
+
+def test_gaussian_noise_allows_stddev_above_one():
+    layer = GaussianNoise(stddev=1.5, seed=0)
+    x = np.zeros((200, 50), dtype='float32')
+    noisy = np.asarray(layer(x, training=True))
+    assert abs(noisy.std() - 1.5) < 0.05
+    np.testing.assert_array_equal(np.asarray(layer(x, training=False)), x)
+    assert layer.name.startswith('gaussian_noise')
+    clone = GaussianNoise.from_config(layer.get_config())
+    assert clone.stddev == 1.5
+    with pytest.raises(ValueError):
+        GaussianNoise(stddev=-0.1)
+
+
+def test_gaussian_noise_up_to_one_is_keras_layer():
+    keras.utils.set_random_seed(1)
+    ours = np.asarray(GaussianNoise(stddev=0.3, seed=3)(
+        np.zeros((10, 10), dtype='float32'), training=True))
+    keras.utils.set_random_seed(1)
+    theirs = np.asarray(keras.layers.GaussianNoise(stddev=0.3, seed=3)(
+        np.zeros((10, 10), dtype='float32'), training=True))
+    np.testing.assert_array_equal(ours, theirs)
+
+
+@pytest.mark.parametrize('name', list(CONFIGS))
+def test_models_build_with_input_noise_above_one(tfr_path, name):
+    model = make_model(tfr_path, name, stddev=2.0)
+    assert model.gaussian_noise.stddev == 2.0
+    assert model.y_pred.shape == (None, 1)

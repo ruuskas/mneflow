@@ -1230,7 +1230,7 @@ class SymmetricModel(BaseModel):
         self.cv_patterns['dcov'] = dcov
         return dcov
 
-    def extract_patterns(self):
+    def extract_patterns(self, relevance=None):
         """
         Extracts spatial connectivity patterns from a cross-validated model.
 
@@ -1252,6 +1252,24 @@ class SymmetricModel(BaseModel):
         :meth:`_effective_pointwise`): the pointwise kernel scaled by the
         batch normalization and attention in between.
 
+        With ``relevance``, the components and frequencies are chosen by
+        the relevance of the SquareSum3d features instead (gradient x
+        input, :meth:`feature_relevance`): the pair (row, col) with the
+        largest relevance summed over the frequencies, at its most
+        relevant frequency; 'diag' the most relevant pair (a, a), at its
+        most relevant frequency. The weights can't rank the frequencies:
+        the batch normalization after SquareSum3d makes the output
+        independent of each frequency's scale, which comes from the norm
+        of the spatial filters, so the effective weights rank the
+        frequencies by the inverse of that scale.
+
+        Parameters
+        ----------
+        relevance : ndarray, shape (n_latent, n_latent, n_freqs, n_folds), optional
+            The relevance of each fold's features, e.g.
+            ``extract_combined_patterns()['relevance']``. If None, the
+            weights choose (as before).
+
         Returns
         -------
         out : dict
@@ -1266,9 +1284,11 @@ class SymmetricModel(BaseModel):
             component's spatial weights w at its frequency f.
             ``freq_patterns[key]`` has shape ``(n_freqs, n_folds)``: the
             frequency weights of the component's feature (the same for
-            'row' and 'col'); ``freq_inds[key]`` (the frequency f, the
-            largest weight; for 'diag' the largest absolute weight) and
-            ``comp_inds[key]`` have shape ``(n_folds,)``.
+            'row' and 'col'), or with ``relevance`` the feature's
+            relevance at each frequency; ``freq_inds[key]`` (the frequency
+            f, the largest weight, for 'diag' the largest absolute weight;
+            or the largest relevance) and ``comp_inds[key]`` have shape
+            ``(n_folds,)``.
 
         Raises
         ------
@@ -1283,6 +1303,12 @@ class SymmetricModel(BaseModel):
         # One weight set per trained fold. meta.data['n_folds'] also counts
         # the holdout fold when test_set='holdout', so it can't be used here.
         n_folds = self.meta.weights['out_w_flat'].shape[-1]
+        if relevance is not None:
+            relevance = np.asarray(relevance)
+            if relevance.ndim != 4 or relevance.shape[-1] != n_folds:
+                raise ValueError(
+                    "relevance must have shape (n_latent, n_latent, "
+                    f"n_freqs, {n_folds}), got {relevance.shape}")
         max_inds_folds = [np.argmax(self.meta.weights['out_w_flat'][:, :, i], 0)
                           for i in range(n_folds)]
         pointwise_shape = self.cv_patterns['ccms']['pointwise'].shape[:-1]
@@ -1318,21 +1344,37 @@ class SymmetricModel(BaseModel):
             return pointwise[:, fold]
 
         for i, ind in enumerate(max_inds_folds):
-            fc1 = np.dot(self.meta.weights['fc1_w_flat'][:, ind, i][..., None],
-                         self.meta.weights['out_w_flat'][ind, :, i])
-            fcr = np.reshape(fc1, pointwise_shape[:-1])
+            if relevance is None:
+                fc1 = np.dot(
+                    self.meta.weights['fc1_w_flat'][:, ind, i][..., None],
+                    self.meta.weights['out_w_flat'][ind, :, i])
+                fcr = np.reshape(fc1, pointwise_shape[:-1])
 
-            # Row and column of the strongest component pair. (The row
-            # used to come from the argmax of the diagonal, an index 0..n-1
-            # that np.unravel_index mapped to row 0 in every fold.)
-            row, col = np.unravel_index(np.argmax(fcr), fcr.shape)
+                # Row and column of the strongest component pair. (The row
+                # used to come from the argmax of the diagonal, an index
+                # 0..n-1 that np.unravel_index mapped to row 0 in every
+                # fold.)
+                row, col = np.unravel_index(np.argmax(fcr), fcr.shape)
 
-            # The pair's feature is weighted by the row component's
-            # frequency weights: both components take its frequency. (The
-            # col component used to take its own weights, which weight the
-            # features (col, *), not this pair.)
-            pair_weights = freq_weights(row, i)
-            max_freq_row = max_freq_col = np.argmax(pair_weights)
+                # The pair's feature is weighted by the row component's
+                # frequency weights: both components take its frequency.
+                # (The col component used to take its own weights, which
+                # weight the features (col, *), not this pair.)
+                pair_weights = freq_weights(row, i)
+                max_freq_row = max_freq_col = np.argmax(pair_weights)
+                diag = np.argmax(np.abs(np.diag(fcr)))
+                diag_weights = freq_weights(diag, i)
+                max_freq_diag = np.argmax(np.abs(diag_weights))
+            else:
+                R = relevance[..., i]
+                pair_relevance = R.sum(axis=-1)
+                row, col = np.unravel_index(np.argmax(pair_relevance),
+                                            pair_relevance.shape)
+                pair_weights = R[row, col]
+                max_freq_row = max_freq_col = np.argmax(pair_weights)
+                diag = np.argmax(np.diag(pair_relevance))
+                diag_weights = R[diag, diag]
+                max_freq_diag = np.argmax(diag_weights)
             spatial_kernel_row = self.meta.weights['ssum1'][max_freq_row, :, row, i]
             spatial_pattern_row = np.dot(self.cv_patterns['dcov'][:, :, max_freq_row, i], spatial_kernel_row.T)
 
@@ -1340,8 +1382,6 @@ class SymmetricModel(BaseModel):
             spatial_pattern_col = np.dot(self.cv_patterns['dcov'][:, :, max_freq_col, i], spatial_kernel_col.T)
 
 
-            diag = np.argmax(np.abs(np.diag(fcr)))
-            max_freq_diag = np.argmax(np.abs(freq_weights(diag, i)))
             spatial_kernel_diag = self.meta.weights['ssum1'][max_freq_diag, :, diag, i]
             spatial_pattern_diag = np.dot(self.cv_patterns['dcov'][:, :, max_freq_diag, i], spatial_kernel_diag.T)
 
@@ -1359,7 +1399,7 @@ class SymmetricModel(BaseModel):
 
             freq_patterns['row'].append(pair_weights)
             freq_patterns['col'].append(pair_weights)
-            freq_patterns['diag'].append(freq_weights(diag, i))
+            freq_patterns['diag'].append(diag_weights)
 
         out['spatial_patterns']['row'] = np.stack(connectivity_patterns['row'], -1)
         out['spatial_patterns']['col'] = np.stack(connectivity_patterns['col'], -1)
@@ -1471,8 +1511,10 @@ class SymmetricModel(BaseModel):
         -------
         out : dict
             ``'pattern'`` (n_nodes, n_folds), ``'freq_relevance'``
-            (n_freqs, n_folds) and ``'filter_relevance'`` (n_latent,
-            n_freqs, n_folds). The model is left with the last fold's
+            (n_freqs, n_folds), ``'filter_relevance'`` (n_latent,
+            n_freqs, n_folds) and ``'relevance'`` (n_latent, n_latent,
+            n_freqs, n_folds; for ``extract_patterns(relevance=...)``).
+            The model is left with the last fold's
             weights.
 
         Raises
@@ -1495,6 +1537,7 @@ class SymmetricModel(BaseModel):
             self.km.load_weights(path)
             X = self._validation_data(fold)
             res = self.combined_pattern(X, input_covariance(X))
-            for key in ('pattern', 'freq_relevance', 'filter_relevance'):
+            for key in ('pattern', 'freq_relevance', 'filter_relevance',
+                        'relevance'):
                 out[key].append(res[key])
         return {key: np.stack(v, -1) for key, v in out.items()}

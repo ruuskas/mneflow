@@ -800,3 +800,70 @@ def test_models_build_with_input_noise_above_one(tfr_path, name):
     model = make_model(tfr_path, name, stddev=2.0)
     assert model.gaussian_noise.stddev == 2.0
     assert model.y_pred.shape == (None, 1)
+
+
+def test_patterns_chosen_by_relevance(tfr_path):
+    """With the features' relevance, the pair with the largest summed
+    relevance and its most relevant frequency give the row and col
+    patterns, and the most relevant (a, a) pair the diag pattern."""
+    model = make_model(tfr_path, 'symmetric', model_id='by_relevance')
+    train_cv(model)
+    n_latent = model.specs['n_latent']
+    rng = np.random.default_rng(0)
+    R = rng.uniform(0, 0.1, (n_latent, n_latent, N_FREQS, N_FOLDS))
+    # Per fold: pair (row, col) with its peak at freq; diag pair (d, d)
+    picks = [(1, 2, 3, 0, 1), (3, 0, 0, 2, 2), (2, 1, 1, 1, 3)]
+    for i, (row, col, freq, d, fd) in enumerate(picks):
+        R[row, col, :, i] += 1
+        R[row, col, freq, i] += 1
+        R[d, d, :, i] += 0.5
+        R[d, d, fd, i] += 0.5
+    patterns = _quiet(model.extract_patterns, relevance=R)
+    dcov = model.cv_patterns['dcov']
+    w = model.meta.weights['ssum1']
+    for i, (row, col, freq, d, fd) in enumerate(picks):
+        assert patterns['comp_inds']['row'][i] == row
+        assert patterns['comp_inds']['col'][i] == col
+        assert patterns['comp_inds']['diag'][i] == d
+        assert patterns['freq_inds']['row'][i] == freq
+        assert patterns['freq_inds']['col'][i] == freq
+        assert patterns['freq_inds']['diag'][i] == fd
+        np.testing.assert_array_equal(
+            patterns['freq_patterns']['row'][:, i], R[row, col, :, i])
+        np.testing.assert_allclose(
+            patterns['spatial_patterns']['col'][:, i],
+            dcov[:, :, freq, i] @ w[freq, :, col, i], rtol=1e-5, atol=1e-8)
+
+
+def test_patterns_by_relevance_need_one_per_fold(tfr_path):
+    model = make_model(tfr_path, 'symmetric', model_id='relevance_shape')
+    train_cv(model)
+    n_latent = model.specs['n_latent']
+    with pytest.raises(ValueError, match='relevance must have shape'):
+        model.extract_patterns(
+            relevance=np.ones((n_latent, n_latent, N_FREQS, N_FOLDS + 1)))
+
+
+def test_combined_patterns_return_each_folds_relevance(tfr_path):
+    model = make_model(tfr_path, 'symmetric', model_id='combined_relevance')
+    _quiet(
+        model.train,
+        n_epochs=2,
+        eval_step=3,
+        early_stopping=1,
+        mode='cv',
+        collect_patterns=True,
+        save_fold_weights=True,
+    )
+    out = _quiet(model.extract_combined_patterns)
+    n_latent = model.specs['n_latent']
+    assert out['relevance'].shape == (n_latent, n_latent, N_FREQS, N_FOLDS)
+    fold = 2
+    model.km.load_weights(model.fold_weights_path(fold))
+    np.testing.assert_allclose(
+        out['relevance'][..., fold],
+        model.feature_relevance(model._validation_data(fold)),
+        rtol=1e-4, atol=1e-7)
+    # The relevance gives patterns for every fold
+    patterns = _quiet(model.extract_patterns, relevance=out['relevance'])
+    assert patterns['spatial_patterns']['row'].shape == (N_NODES, N_FOLDS)

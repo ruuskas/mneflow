@@ -704,6 +704,44 @@ class SymmetricModel(BaseModel):
             gain = gain * np.mean(se_scale, axis=0)
         return kernel * gain.reshape(-1, *[1] * (kernel.ndim - 1))
 
+    def _standardized_pointwise(self, activations):
+        """The pointwise weights per standard deviation of each frequency's
+        SquareSum3d feature.
+
+        Batch normalization divides frequency f of the SquareSum3d output by
+        its standard deviation sigma_f, so the model doesn't depend on the
+        scale of each frequency's features, and the effective weights
+        (:meth:`_effective_pointwise`, which include 1/sigma_f) rank the
+        frequencies partly by that arbitrary scale. These weights leave
+        out 1/sigma_f: ``kernel[f] * gamma_f * mean(se_scale[:, f])``,
+        the change of the pointwise input per standard deviation of the
+        feature (a standardized coefficient). Without batch normalization,
+        gamma_f / sigma_f is replaced by 1 and the kernel multiplied by the
+        features' standard deviation.
+
+        Parameters
+        ----------
+        activations : dict
+            :meth:`_activations` of some data (``'squaresym'``, and
+            ``'se_scale'`` with attention).
+
+        Returns
+        -------
+        weights : ndarray
+            The shape of ``extract_weights()['pointwise']``: frequency
+            first.
+        """
+        kernel = np.squeeze(self.pointwise.kernel.numpy())
+        if self.ssum_bn is not None:
+            bn = self.ssum_bn
+            gain = (bn.gamma.numpy() if bn.scale
+                    else np.ones(kernel.shape[0]))
+        else:
+            gain = np.std(activations['squaresym'], axis=(0, 1, 2))
+        if 'se_scale' in self._graph_outputs:
+            gain = gain * np.mean(activations['se_scale'], axis=0)
+        return kernel * gain.reshape(-1, *[1] * (kernel.ndim - 1))
+
     def _apply_pointwise(self, x) -> tf.Tensor:
         """Apply the pointwise layer to the SquareSum3d output ``x``.
 
@@ -1230,7 +1268,7 @@ class SymmetricModel(BaseModel):
         self.cv_patterns['dcov'] = dcov
         return dcov
 
-    def extract_patterns(self, relevance=None):
+    def extract_patterns(self, relevance=None, standardized=None):
         """
         Extracts spatial connectivity patterns from a cross-validated model.
 
@@ -1263,12 +1301,27 @@ class SymmetricModel(BaseModel):
         of the spatial filters, so the effective weights rank the
         frequencies by the inverse of that scale.
 
+        With ``standardized``, the weights choose as without, but per
+        standard deviation of what they act on, so that the arbitrary
+        scale of the features doesn't enter: the frequency by the
+        standardized pointwise weights (:meth:`_standardized_pointwise`,
+        without the batch normalization's 1/sigma_f), and the pair by the
+        dense weights times the standard deviation of each pair's
+        pointwise output.
+
         Parameters
         ----------
         relevance : ndarray, shape (n_latent, n_latent, n_freqs, n_folds), optional
             The relevance of each fold's features, e.g.
             ``extract_combined_patterns()['relevance']``. If None, the
             weights choose (as before).
+        standardized : dict, optional
+            ``'pointwise'`` (the standardized pointwise weights, shape of
+            the effective ones with the folds last) and ``'pair_sd'``
+            (n_latent * n_latent, n_folds; the standard deviation of each
+            pair's pointwise output, in the order of the dense layer's
+            input), e.g. from :meth:`extract_combined_patterns`. Not with
+            ``relevance``.
 
         Returns
         -------
@@ -1303,6 +1356,8 @@ class SymmetricModel(BaseModel):
         # One weight set per trained fold. meta.data['n_folds'] also counts
         # the holdout fold when test_set='holdout', so it can't be used here.
         n_folds = self.meta.weights['out_w_flat'].shape[-1]
+        if relevance is not None and standardized is not None:
+            raise ValueError("Give relevance or standardized, not both")
         if relevance is not None:
             relevance = np.asarray(relevance)
             if relevance.ndim != 4 or relevance.shape[-1] != n_folds:
@@ -1317,7 +1372,14 @@ class SymmetricModel(BaseModel):
         comp_inds = defaultdict(list)
         freq_patterns = defaultdict(list)
 
-        if 'pointwise_effective' in self.meta.weights:
+        pair_sd = None
+        if standardized is not None:
+            pointwise = np.asarray(standardized['pointwise'])
+            pair_sd = np.asarray(standardized['pair_sd'])
+            if pointwise.shape[-1] != n_folds or pair_sd.shape[-1] != n_folds:
+                raise ValueError("standardized weights must have one set "
+                                 f"per fold ({n_folds})")
+        elif 'pointwise_effective' in self.meta.weights:
             pointwise = self.meta.weights['pointwise_effective']
         elif self.ssum_bn is not None or 'se_scale' in self._graph_outputs:
             raise ValueError(
@@ -1345,8 +1407,13 @@ class SymmetricModel(BaseModel):
 
         for i, ind in enumerate(max_inds_folds):
             if relevance is None:
+                fc1_w = self.meta.weights['fc1_w_flat'][:, ind, i]
+                if pair_sd is not None:
+                    # Per standard deviation of each pair's value
+                    fc1_w = fc1_w * pair_sd[:, i].reshape(
+                        -1, *[1] * (fc1_w.ndim - 1))
                 fc1 = np.dot(
-                    self.meta.weights['fc1_w_flat'][:, ind, i][..., None],
+                    fc1_w[..., None],
                     self.meta.weights['out_w_flat'][ind, :, i])
                 fcr = np.reshape(fc1, pointwise_shape[:-1])
 
@@ -1512,8 +1579,12 @@ class SymmetricModel(BaseModel):
         out : dict
             ``'pattern'`` (n_nodes, n_folds), ``'freq_relevance'``
             (n_freqs, n_folds), ``'filter_relevance'`` (n_latent,
-            n_freqs, n_folds) and ``'relevance'`` (n_latent, n_latent,
-            n_freqs, n_folds; for ``extract_patterns(relevance=...)``).
+            n_freqs, n_folds), ``'relevance'`` (n_latent, n_latent,
+            n_freqs, n_folds; for ``extract_patterns(relevance=...)``),
+            and ``'pointwise_standardized'`` (the standardized pointwise
+            weights, folds last) and ``'pair_sd'`` (n_latent * n_latent,
+            n_folds; for ``extract_patterns(standardized=...)``), all from
+            each fold's model and validation data.
             The model is left with the last fold's
             weights.
 
@@ -1537,7 +1608,12 @@ class SymmetricModel(BaseModel):
             self.km.load_weights(path)
             X = self._validation_data(fold)
             res = self.combined_pattern(X, input_covariance(X))
+            activations = self._activations(X)
+            res['pointwise_standardized'] = self._standardized_pointwise(
+                activations)
+            res['pair_sd'] = activations['pointwise'].reshape(
+                len(activations['pointwise']), -1).std(axis=0)
             for key in ('pattern', 'freq_relevance', 'filter_relevance',
-                        'relevance'):
+                        'relevance', 'pointwise_standardized', 'pair_sd'):
                 out[key].append(res[key])
         return {key: np.stack(v, -1) for key, v in out.items()}

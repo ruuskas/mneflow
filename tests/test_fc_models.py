@@ -867,3 +867,82 @@ def test_combined_patterns_return_each_folds_relevance(tfr_path):
     # The relevance gives patterns for every fold
     patterns = _quiet(model.extract_patterns, relevance=out['relevance'])
     assert patterns['spatial_patterns']['row'].shape == (N_NODES, N_FOLDS)
+
+
+def test_standardized_pointwise_weights_leave_out_the_feature_scale(
+        tfr_path):
+    """The standardized pointwise weights are the effective ones times the
+    batch normalization's standard deviation of each frequency: the
+    1/sigma_f of the effective weights is left out."""
+    model = make_model(tfr_path, 'symmetric', model_id='standardized_pw')
+    train_cv(model)
+    X, _ = next(iter(model.dataset.val))
+    act = model._activations(X)
+    effective = model._effective_pointwise(act.get('se_scale'))
+    standardized = model._standardized_pointwise(act)
+    bn = model.ssum_bn
+    sigma = np.sqrt(bn.moving_variance.numpy() + bn.epsilon)
+    np.testing.assert_allclose(standardized,
+                               effective * sigma[:, None], rtol=1e-5,
+                               atol=1e-8)
+
+
+def test_patterns_chosen_by_standardized_weights(tfr_path):
+    """With standardized weights, the frequency is the largest standardized
+    pointwise weight of the row component, and the pair the largest dense
+    weight times the pair's standard deviation."""
+    model = make_model(tfr_path, 'symmetric', model_id='by_standardized')
+    train_cv(model)
+    n_latent = model.specs['n_latent']
+    w = model.meta.weights
+    rng = np.random.default_rng(1)
+    pointwise = rng.uniform(0, 0.1, (N_FREQS, n_latent, N_FOLDS))
+    # Make one pair dominate in each fold through its standard deviation
+    pair_sd = np.full((n_latent * n_latent, N_FOLDS), 1e-3)
+    picks = [(1, 2, 3), (3, 0, 0), (2, 2, 1)]
+    for i, (row, col, freq) in enumerate(picks):
+        ind = np.argmax(w['out_w_flat'][:, :, i], 0)
+        fc1 = w["fc1_w_flat"][:, ind, i].ravel()
+        flat = row * n_latent + col
+        pair_sd[flat, i] = 1e3 / max(abs(fc1[flat]), 1e-9) * np.sign(
+            fc1[flat])
+        pointwise[freq, row, i] = 1.
+    patterns = _quiet(model.extract_patterns, standardized=dict(
+        pointwise=pointwise, pair_sd=pair_sd))
+    for i, (row, col, freq) in enumerate(picks):
+        assert patterns['comp_inds']['row'][i] == row
+        assert patterns['comp_inds']['col'][i] == col
+        assert patterns['freq_inds']['row'][i] == freq
+        np.testing.assert_array_equal(
+            patterns['freq_patterns']['row'][:, i], pointwise[:, row, i])
+    with pytest.raises(ValueError, match='not both'):
+        model.extract_patterns(
+            relevance=np.ones((n_latent, n_latent, N_FREQS, N_FOLDS)),
+            standardized=dict(pointwise=pointwise, pair_sd=pair_sd))
+
+
+def test_combined_patterns_return_standardized_weights(tfr_path):
+    model = make_model(tfr_path, 'symmetric', model_id='combined_std')
+    _quiet(
+        model.train,
+        n_epochs=2,
+        eval_step=3,
+        early_stopping=1,
+        mode='cv',
+        collect_patterns=True,
+        save_fold_weights=True,
+    )
+    out = _quiet(model.extract_combined_patterns)
+    n_latent = model.specs['n_latent']
+    assert out['pointwise_standardized'].shape == (N_FREQS, n_latent,
+                                                   N_FOLDS)
+    assert out['pair_sd'].shape == (n_latent * n_latent, N_FOLDS)
+    fold = 1
+    model.km.load_weights(model.fold_weights_path(fold))
+    act = model._activations(model._validation_data(fold))
+    np.testing.assert_allclose(out['pointwise_standardized'][..., fold],
+                               model._standardized_pointwise(act),
+                               rtol=1e-5, atol=1e-8)
+    patterns = _quiet(model.extract_patterns, standardized=dict(
+        pointwise=out['pointwise_standardized'], pair_sd=out['pair_sd']))
+    assert patterns['spatial_patterns']['row'].shape == (N_NODES, N_FOLDS)
